@@ -88,17 +88,43 @@ Due to CAPTCHA protection, initial authentication requires extracting tokens fro
 | Sensor | Description | State Class |
 |--------|-------------|-------------|
 | Latest Interval Usage | Most recent 30-minute reading (kWh) | measurement |
-| Daily Usage | Today's total consumption (kWh) | total_increasing |
-| Monthly Usage | Current month's consumption (kWh) | total_increasing |
-| Daily Cost | Estimated cost for today ($) | total |
-| Monthly Cost | Estimated cost for current month ($) | total |
+| Yesterday's Usage | Previous day's total consumption (kWh) | total_increasing |
+| Current Month Usage | Month-to-date consumption (kWh) | total_increasing |
+| Yesterday's Cost | Estimated cost for previous day ($) | total |
+| Current Month Cost | Estimated cost for month-to-date ($) | total |
+| Current Billing Period Usage | Usage in current billing cycle (kWh) | total_increasing |
+| Last Bill Charges | Charges from previous bill ($) | total |
+| Last Bill Usage | Usage from previous bill (kWh) | total |
+| Effective Rate | Derived cost per kWh ($/kWh) | measurement |
+
+> **Note**: The Dominion Energy API only provides data for **completed days**. Yesterday's data typically becomes available the following morning. Sensors include a `data_date` attribute showing which day the data represents.
 
 ## Energy Dashboard
 
-The Daily Usage and Monthly Usage sensors are compatible with Home Assistant's Energy Dashboard:
+This integration provides **external statistics** for the Home Assistant Energy Dashboard with hourly granularity.
 
-1. Go to Settings > Dashboards > Energy
-2. Add the "Daily Usage" sensor as an electricity consumption source
+### Setup
+
+1. Go to **Settings → Dashboards → Energy**
+2. Under **Electricity grid**, click **Add consumption**
+3. Search for your account number or "dominion"
+4. Select the statistic: `dominion_energy:{account_number}_energy_consumption`
+
+### How It Works
+
+- The integration creates external statistics (not sensor entities) for the Energy Dashboard
+- Data is aggregated from 30-minute intervals into hourly statistics
+- **7 days of historical data** are automatically backfilled on first setup
+- Statistics update daily with the previous day's data
+
+### Why External Statistics?
+
+The Energy Dashboard works best with cumulative statistics that track total consumption over time. External statistics allow the integration to:
+- Backfill historical data that existed before you installed the integration
+- Provide accurate hourly breakdowns for energy analysis
+- Handle the 1-day data delay gracefully
+
+> **Tip**: The statistic ID format is `dominion_energy:{account_number}_energy_consumption`. You can find your account number in the integration's device info or on your Dominion Energy bill.
 
 ## Token Expiration
 
