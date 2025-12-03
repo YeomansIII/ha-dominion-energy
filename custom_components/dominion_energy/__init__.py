@@ -5,7 +5,6 @@ from __future__ import annotations
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 
-from .const import DOMAIN
 from .coordinator import DominionEnergyConfigEntry, DominionEnergyCoordinator
 
 PLATFORMS: list[Platform] = [Platform.SENSOR]

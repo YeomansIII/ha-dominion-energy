@@ -33,3 +33,49 @@ jobs:
 
       - name: Hassfest validation
         uses: home-assistant/actions/hassfest@master
+
+  lint:
+    name: Ruff Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Run Ruff linter
+        run: uvx ruff check custom_components/dominion_energy/
+
+      - name: Run Ruff formatter check
+        run: uvx ruff format --check custom_components/dominion_energy/
+
+  type-check:
+    name: Type Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Install dependencies
+        run: |
+          uv venv
+          uv pip install homeassistant dompower mypy
+
+      - name: Run mypy
+        run: |
+          source .venv/bin/activate
+          mypy custom_components/dominion_energy/ --ignore-missing-imports --no-error-summary || true

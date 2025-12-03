@@ -191,9 +191,7 @@ async def async_setup_entry(
     )
 
 
-class DominionEnergySensor(
-    CoordinatorEntity[DominionEnergyCoordinator], SensorEntity
-):
+class DominionEnergySensor(CoordinatorEntity[DominionEnergyCoordinator], SensorEntity):
     """Representation of a Dominion Energy sensor."""
 
     _attr_has_entity_name = True

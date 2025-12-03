@@ -5,6 +5,8 @@ from typing import Final
 DOMAIN: Final = "dominion_energy"
 
 # Config entry data keys
+CONF_USERNAME: Final = "username"
+CONF_PASSWORD: Final = "password"
 CONF_ACCESS_TOKEN: Final = "access_token"
 CONF_REFRESH_TOKEN: Final = "refresh_token"
 CONF_ACCOUNT_NUMBER: Final = "account_number"

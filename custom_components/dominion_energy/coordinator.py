@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, timedelta
 import logging
-from typing import TYPE_CHECKING
 
 from dompower import (
     BillForecast,
@@ -48,8 +47,6 @@ from .const import (
     UPDATE_INTERVAL_MINUTES,
 )
 
-if TYPE_CHECKING:
-    from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -94,18 +91,14 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
         )
         self._client: DompowerClient | None = None
 
-    def _token_update_callback(
-        self, access_token: str, refresh_token: str
-    ) -> None:
+    def _token_update_callback(self, access_token: str, refresh_token: str) -> None:
         """Handle token updates from the client."""
         new_data = {
             **self.config_entry.data,
             CONF_ACCESS_TOKEN: access_token,
             CONF_REFRESH_TOKEN: refresh_token,
         }
-        self.hass.config_entries.async_update_entry(
-            self.config_entry, data=new_data
-        )
+        self.hass.config_entries.async_update_entry(self.config_entry, data=new_data)
         _LOGGER.debug("Tokens updated and persisted")
 
     async def _async_setup(self) -> None:
@@ -209,7 +202,9 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
             if rate:
                 return round(total_kwh * rate, 2)
             # Fallback to fixed if no derived rate available
-            return round(total_kwh * options.get(CONF_FIXED_RATE, DEFAULT_FIXED_RATE), 2)
+            return round(
+                total_kwh * options.get(CONF_FIXED_RATE, DEFAULT_FIXED_RATE), 2
+            )
 
         elif cost_mode == COST_MODE_TOU:
             # Time-of-use calculation

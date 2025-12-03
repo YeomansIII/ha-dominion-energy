@@ -2,25 +2,49 @@
   "config": {
     "abort": {
       "already_configured": "This account is already configured",
-      "reauth_successful": "Re-authentication successful"
+      "reauth_successful": "Re-authentication successful",
+      "unknown": "An unexpected error occurred"
     },
     "error": {
-      "cannot_connect": "Cannot connect to Dominion Energy API",
-      "invalid_auth": "Invalid tokens - please get fresh tokens using the dompower auth-helper",
+      "cannot_connect": "Cannot connect to Dominion Energy",
+      "invalid_auth": "Authentication failed",
+      "invalid_credentials": "Invalid email or password",
+      "tfa_failed": "Verification code is incorrect",
+      "tfa_expired": "Verification session expired, please try again",
       "unknown": "An unexpected error occurred",
       "no_meters_found": "No active AMI meters found for this account"
     },
     "step": {
       "user": {
         "title": "Connect to Dominion Energy",
-        "description": "Enter your Dominion Energy API tokens.\n\nTo get these tokens, run:\n```\ndompower auth-helper\n```\n\nOr log in at [{login_url}]({login_url}) and extract tokens from browser DevTools.",
+        "description": "Enter your Dominion Energy account credentials.",
         "data": {
-          "access_token": "Access Token",
-          "refresh_token": "Refresh Token"
+          "username": "Email Address",
+          "password": "Password"
         },
         "data_description": {
-          "access_token": "JWT access token from API",
-          "refresh_token": "Refresh token from API"
+          "username": "The email address for your Dominion Energy account",
+          "password": "Your Dominion Energy account password"
+        }
+      },
+      "tfa_select": {
+        "title": "Two-Factor Authentication",
+        "description": "Select where to receive your verification code.",
+        "data": {
+          "tfa_target": "Send code to"
+        },
+        "data_description": {
+          "tfa_target": "Choose your phone or email to receive the verification code"
+        }
+      },
+      "tfa_code": {
+        "title": "Enter Verification Code",
+        "description": "Enter the verification code sent to {target}.",
+        "data": {
+          "code": "Verification Code"
+        },
+        "data_description": {
+          "code": "The 6-digit code sent to your phone or email"
         }
       },
       "select_meter": {
@@ -35,10 +59,34 @@
       },
       "reauth_confirm": {
         "title": "Re-authenticate {name}",
-        "description": "Your authentication has expired. Run `dompower auth-helper` or log in at [{login_url}]({login_url}) to get fresh tokens.",
+        "description": "Your session has expired. Please sign in again.",
         "data": {
-          "access_token": "Access Token",
-          "refresh_token": "Refresh Token"
+          "username": "Email Address",
+          "password": "Password"
+        },
+        "data_description": {
+          "username": "The email address for your Dominion Energy account",
+          "password": "Your Dominion Energy account password"
+        }
+      },
+      "reauth_tfa_select": {
+        "title": "Two-Factor Authentication",
+        "description": "Select where to receive your verification code.",
+        "data": {
+          "tfa_target": "Send code to"
+        },
+        "data_description": {
+          "tfa_target": "Choose your phone or email to receive the verification code"
+        }
+      },
+      "reauth_tfa_code": {
+        "title": "Enter Verification Code",
+        "description": "Enter the verification code sent to {target}.",
+        "data": {
+          "code": "Verification Code"
+        },
+        "data_description": {
+          "code": "The 6-digit code sent to your phone or email"
         }
       }
     }
