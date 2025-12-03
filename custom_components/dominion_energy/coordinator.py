@@ -358,7 +358,7 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
             name=f"Dominion Energy {account_number} consumption",
             source=DOMAIN,
             statistic_id=stat_id,
-            unit_class=None,  # Energy class is deprecated, use None
+            unit_class="energy",
             unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         )
 
@@ -444,7 +444,7 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
             name=f"Dominion Energy {account_number} consumption",
             source=DOMAIN,
             statistic_id=stat_id,
-            unit_class=None,
+            unit_class="energy",
             unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         )
 
