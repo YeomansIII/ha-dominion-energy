@@ -44,6 +44,7 @@ from .const import (
     BACKFILL_DAYS,
     CONF_ACCESS_TOKEN,
     CONF_ACCOUNT_NUMBER,
+    CONF_COOKIES,
     CONF_COST_MODE,
     CONF_FIXED_RATE,
     CONF_METER_NUMBER,
@@ -140,6 +141,7 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
         """
         username = self.config_entry.data.get(CONF_USERNAME)
         password = self.config_entry.data.get(CONF_PASSWORD)
+        existing_cookies = self.config_entry.data.get(CONF_COOKIES)
 
         if not username or not password:
             _LOGGER.warning("No stored credentials for auto-reauth")
@@ -152,13 +154,22 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
             # Use GigyaAuthenticator.async_login() without TFA callback
             # This will raise TFARequiredError if TFA is needed
             auth = GigyaAuthenticator(session)
+
+            # Import existing cookies to potentially bypass TFA
+            if existing_cookies:
+                auth.import_cookies(existing_cookies)
+
             tokens = await auth.async_login(username, password, tfa_code_callback=None)
 
-            # Update stored tokens in config entry
+            # Export new cookies after successful login
+            new_cookies = auth.export_cookies()
+
+            # Update stored tokens and cookies in config entry
             new_data = {
                 **self.config_entry.data,
                 CONF_ACCESS_TOKEN: tokens.access_token,
                 CONF_REFRESH_TOKEN: tokens.refresh_token,
+                CONF_COOKIES: new_cookies,
             }
             self.hass.config_entries.async_update_entry(
                 self.config_entry, data=new_data

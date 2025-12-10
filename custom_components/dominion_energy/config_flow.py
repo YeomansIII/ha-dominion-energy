@@ -24,6 +24,7 @@ from dompower import (
 import voluptuous as vol
 
 from homeassistant.config_entries import (
+    SOURCE_RECONFIGURE,
     ConfigEntry,
     ConfigFlow,
     ConfigFlowResult,
@@ -35,6 +36,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from .const import (
     CONF_ACCESS_TOKEN,
     CONF_ACCOUNT_NUMBER,
+    CONF_COOKIES,
     CONF_COST_MODE,
     CONF_FIXED_RATE,
     CONF_METER_NUMBER,
@@ -86,6 +88,7 @@ class DominionEnergyConfigFlow(ConfigFlow, domain=DOMAIN):
         self._password: str | None = None
         self._access_token: str | None = None
         self._refresh_token: str | None = None
+        self._cookies: dict | None = None
         self._authenticator: GigyaAuthenticator | None = None
         self._tfa_targets: list[TFATarget] = []
         self._selected_tfa_target: TFATarget | None = None
@@ -102,6 +105,15 @@ class DominionEnergyConfigFlow(ConfigFlow, domain=DOMAIN):
     ) -> ConfigFlowResult:
         """Handle the initial step - collect username and password."""
         errors: dict[str, str] = {}
+        suggested_values: dict[str, Any] | None = None
+
+        # Prefill form with existing data when reconfiguring
+        if self.source == SOURCE_RECONFIGURE:
+            reconfigure_entry = self._get_reconfigure_entry()
+            suggested_values = {
+                CONF_USERNAME: reconfigure_entry.data.get(CONF_USERNAME, ""),
+                CONF_PASSWORD: reconfigure_entry.data.get(CONF_PASSWORD, ""),
+            }
 
         if user_input is not None:
             self._username = user_input[CONF_USERNAME]
@@ -128,6 +140,7 @@ class DominionEnergyConfigFlow(ConfigFlow, domain=DOMAIN):
                 tokens = await self._authenticator._async_complete_login()
                 self._access_token = tokens.access_token
                 self._refresh_token = tokens.refresh_token
+                self._cookies = self._authenticator.export_cookies()
 
                 # Proceed to account discovery
                 return await self.async_step_discover_accounts()
@@ -145,7 +158,9 @@ class DominionEnergyConfigFlow(ConfigFlow, domain=DOMAIN):
 
         return self.async_show_form(
             step_id="user",
-            data_schema=STEP_USER_DATA_SCHEMA,
+            data_schema=self.add_suggested_values_to_schema(
+                STEP_USER_DATA_SCHEMA, suggested_values
+            ),
             errors=errors,
         )
 
@@ -234,6 +249,7 @@ class DominionEnergyConfigFlow(ConfigFlow, domain=DOMAIN):
                 tokens = await self._authenticator.async_verify_tfa_code(code)
                 self._access_token = tokens.access_token
                 self._refresh_token = tokens.refresh_token
+                self._cookies = self._authenticator.export_cookies()
 
                 # Proceed to account discovery
                 return await self.async_step_discover_accounts()
@@ -353,25 +369,44 @@ class DominionEnergyConfigFlow(ConfigFlow, domain=DOMAIN):
     async def _create_entry_from_selection(
         self, selection_key: str
     ) -> ConfigFlowResult:
-        """Create config entry from the selected account/meter."""
+        """Create or update config entry from the selected account/meter."""
         account, meter = self._account_meter_options[selection_key]
 
-        # Check for duplicate
+        # Set unique ID
         await self.async_set_unique_id(account.account_number)
+
+        new_data = {
+            CONF_USERNAME: self._username,
+            CONF_PASSWORD: self._password,
+            CONF_ACCESS_TOKEN: self._access_token,
+            CONF_REFRESH_TOKEN: self._refresh_token,
+            CONF_COOKIES: self._cookies,
+            CONF_ACCOUNT_NUMBER: account.account_number,
+            CONF_METER_NUMBER: meter.device_id,
+            CONF_SERVICE_ADDRESS: str(account.service_address),
+        }
+
+        # Handle reconfigure flow - update existing entry
+        if self.source == SOURCE_RECONFIGURE:
+            self._abort_if_unique_id_mismatch()
+            return self.async_update_reload_and_abort(
+                self._get_reconfigure_entry(),
+                data=new_data,
+            )
+
+        # New entry - check for duplicates
         self._abort_if_unique_id_configured()
 
         return self.async_create_entry(
             title=f"Dominion Energy ({account.account_number})",
-            data={
-                CONF_USERNAME: self._username,
-                CONF_PASSWORD: self._password,
-                CONF_ACCESS_TOKEN: self._access_token,
-                CONF_REFRESH_TOKEN: self._refresh_token,
-                CONF_ACCOUNT_NUMBER: account.account_number,
-                CONF_METER_NUMBER: meter.device_id,
-                CONF_SERVICE_ADDRESS: str(account.service_address),
-            },
+            data=new_data,
         )
+
+    async def async_step_reconfigure(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Handle reconfiguration - allows user to re-authenticate."""
+        return await self.async_step_user()
 
     async def async_step_reauth(
         self, entry_data: Mapping[str, Any]
@@ -398,6 +433,11 @@ class DominionEnergyConfigFlow(ConfigFlow, domain=DOMAIN):
                 self._username = stored_username
                 self._password = stored_password
 
+                # Load existing cookies to potentially bypass TFA
+                existing_cookies = reauth_entry.data.get(CONF_COOKIES)
+                if existing_cookies:
+                    self._authenticator.import_cookies(existing_cookies)
+
                 await self._authenticator.async_init_session()
                 result = await self._authenticator.async_submit_credentials(
                     stored_username, stored_password
@@ -409,10 +449,12 @@ class DominionEnergyConfigFlow(ConfigFlow, domain=DOMAIN):
 
                 # No TFA - complete login and update entry
                 tokens = await self._authenticator._async_complete_login()
+                new_cookies = self._authenticator.export_cookies()
                 new_data = {
                     **reauth_entry.data,
                     CONF_ACCESS_TOKEN: tokens.access_token,
                     CONF_REFRESH_TOKEN: tokens.refresh_token,
+                    CONF_COOKIES: new_cookies,
                 }
                 return self.async_update_reload_and_abort(reauth_entry, data=new_data)
 
@@ -448,12 +490,14 @@ class DominionEnergyConfigFlow(ConfigFlow, domain=DOMAIN):
                     return await self.async_step_reauth_tfa_select()
 
                 tokens = await self._authenticator._async_complete_login()
+                new_cookies = self._authenticator.export_cookies()
                 new_data = {
                     **reauth_entry.data,
                     CONF_USERNAME: self._username,
                     CONF_PASSWORD: self._password,
                     CONF_ACCESS_TOKEN: tokens.access_token,
                     CONF_REFRESH_TOKEN: tokens.refresh_token,
+                    CONF_COOKIES: new_cookies,
                 }
                 return self.async_update_reload_and_abort(reauth_entry, data=new_data)
 
@@ -543,12 +587,14 @@ class DominionEnergyConfigFlow(ConfigFlow, domain=DOMAIN):
 
             try:
                 tokens = await self._authenticator.async_verify_tfa_code(code)
+                new_cookies = self._authenticator.export_cookies()
                 new_data = {
                     **reauth_entry.data,
                     CONF_USERNAME: self._username,
                     CONF_PASSWORD: self._password,
                     CONF_ACCESS_TOKEN: tokens.access_token,
                     CONF_REFRESH_TOKEN: tokens.refresh_token,
+                    CONF_COOKIES: new_cookies,
                 }
                 return self.async_update_reload_and_abort(reauth_entry, data=new_data)
 
