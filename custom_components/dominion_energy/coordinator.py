@@ -113,6 +113,9 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
             update_interval=timedelta(minutes=UPDATE_INTERVAL_MINUTES),
         )
         self._client: DompowerClient | None = None
+        # Track if backfill has been initiated to prevent race condition
+        # where recorder hasn't committed stats yet and backfill runs again
+        self._backfill_initiated: bool = False
 
     def _token_update_callback(self, access_token: str, refresh_token: str) -> None:
         """Handle token updates from the client."""
@@ -354,6 +357,7 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
         interval data. On first setup, backfills BACKFILL_DAYS days of history.
         """
         stat_id = f"{DOMAIN}:{account_number}_energy_consumption"
+        _LOGGER.debug("Checking statistics for %s (data_date=%s)", stat_id, data_date)
 
         # Check if we have existing statistics
         last_stat = await get_instance(self.hass).async_add_executor_job(
@@ -361,15 +365,30 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
         )
 
         if not last_stat.get(stat_id):
+            # No existing statistics found
+            if self._backfill_initiated:
+                # Backfill was already started, waiting for recorder to commit
+                _LOGGER.debug(
+                    "Backfill already initiated for %s, waiting for recorder to commit",
+                    stat_id,
+                )
+                return
+
             # First time - backfill historical data
             _LOGGER.info(
                 "First statistics update for %s - backfilling %d days of data",
                 account_number,
                 BACKFILL_DAYS,
             )
+            self._backfill_initiated = True
             await self._backfill_statistics(account_number, meter_number, stat_id)
         else:
-            # Incremental update
+            # Statistics exist - reset backfill flag and do incremental update
+            self._backfill_initiated = False
+            _LOGGER.debug(
+                "Found existing statistics for %s, performing incremental update",
+                stat_id,
+            )
             await self._update_statistics(
                 account_number, meter_number, stat_id, last_stat, data_date
             )
@@ -457,27 +476,55 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
         """Update statistics with new data since last recorded statistic."""
         assert self._client is not None
 
-        # Get the last recorded statistic time and sum
-        last_stat_data = last_stat[stat_id][0]
-        last_stat_start = last_stat_data["start"]
-        current_sum = float(last_stat_data.get("sum", 0))
+        try:
+            # Get the last recorded statistic time and sum
+            last_stat_data = last_stat[stat_id][0]
+            last_stat_start = last_stat_data["start"]
+            current_sum = float(last_stat_data.get("sum") or 0)
 
-        # Convert to datetime for comparison
-        if isinstance(last_stat_start, (int, float)):
-            last_stat_dt = datetime.fromtimestamp(last_stat_start, tz=dt_util.UTC)
-        else:
-            last_stat_dt = last_stat_start
+            _LOGGER.debug(
+                "Last statistic for %s: start=%s (type=%s), sum=%.3f",
+                stat_id,
+                last_stat_start,
+                type(last_stat_start).__name__,
+                current_sum,
+            )
 
-        # Convert to local timezone for date comparison since data_date is local
-        # (The timestamps are stored as UTC but actually represent local times
-        # due to how the dompower library parses them)
-        local_tz = dt_util.get_default_time_zone()
-        last_stat_local = last_stat_dt.astimezone(local_tz)
-        last_stat_date = last_stat_local.date()
+            # Convert to datetime for comparison
+            if isinstance(last_stat_start, (int, float)):
+                last_stat_dt = datetime.fromtimestamp(last_stat_start, tz=dt_util.UTC)
+            else:
+                last_stat_dt = last_stat_start
+
+            # Convert to local timezone for date comparison.
+            # The dompower library returns timestamps in America/New_York timezone,
+            # which are then converted to UTC when stored. We convert back to local
+            # to get the correct date for comparison with data_date (which is local).
+            local_tz = dt_util.get_default_time_zone()
+            last_stat_local = last_stat_dt.astimezone(local_tz)
+            last_stat_date = last_stat_local.date()
+
+            _LOGGER.debug(
+                "Date comparison: last_stat_dt=%s, last_stat_local=%s, "
+                "last_stat_date=%s, data_date=%s",
+                last_stat_dt,
+                last_stat_local,
+                last_stat_date,
+                data_date,
+            )
+
+        except (KeyError, IndexError, TypeError, ValueError) as err:
+            _LOGGER.warning(
+                "Error parsing last statistic for %s: %s (last_stat=%s)",
+                stat_id,
+                err,
+                last_stat,
+            )
+            return
 
         # Check if we need to fetch new data
         if last_stat_date >= data_date:
-            _LOGGER.info(
+            _LOGGER.debug(
                 "Statistics already up to date: last_stat_date=%s >= data_date=%s",
                 last_stat_date,
                 data_date,
@@ -486,6 +533,20 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
 
         # Fetch data from day after last stat to data_date
         start_date = last_stat_date + timedelta(days=1)
+
+        # Safety check: if start_date is older than API data availability (~68 days),
+        # limit to BACKFILL_DAYS to avoid requesting unavailable data
+        today = date.today()
+        oldest_available = today - timedelta(days=BACKFILL_DAYS)
+        if start_date < oldest_available:
+            _LOGGER.warning(
+                "Statistics are very stale (last: %s). Limiting fetch to last %d days. "
+                "Some historical data may be lost.",
+                last_stat_date,
+                BACKFILL_DAYS,
+            )
+            start_date = oldest_available
+
         _LOGGER.info(
             "Fetching statistics update from %s to %s (current_sum=%.3f)",
             start_date,
@@ -505,8 +566,15 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
             return
 
         if not intervals:
-            _LOGGER.debug("No new interval data for statistics update")
+            _LOGGER.debug(
+                "No new interval data for statistics update (requested %s to %s). "
+                "API may not have data available yet.",
+                start_date,
+                data_date,
+            )
             return
+
+        _LOGGER.debug("Received %d intervals for statistics update", len(intervals))
 
         # Group intervals by hour
         hourly_data: dict[datetime, float] = {}

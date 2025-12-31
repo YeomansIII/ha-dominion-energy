@@ -31,7 +31,9 @@ COST_MODE_API: Final = "api_estimate"
 UPDATE_INTERVAL_MINUTES: Final = 30
 
 # Historical data backfill on first setup
-BACKFILL_DAYS: Final = 7
+# Note: The Dominion API returns ~68 days of 30-minute data regardless of
+# the requested date range, so we request 60 days to capture most available data
+BACKFILL_DAYS: Final = 60
 
 # Default cost values
 DEFAULT_FIXED_RATE: Final = 0.12  # $/kWh

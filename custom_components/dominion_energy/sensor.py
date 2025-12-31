@@ -43,7 +43,8 @@ SENSORS: tuple[DominionEnergySensorDescription, ...] = (
         key="latest_interval_usage",
         name="Latest interval usage",
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
-        device_class=SensorDeviceClass.ENERGY,
+        # Note: Not using device_class=ENERGY because state_class=MEASUREMENT
+        # is incompatible with energy device class (requires total/total_increasing)
         state_class=SensorStateClass.MEASUREMENT,
         suggested_display_precision=3,
         value_fn=lambda data: data.latest_usage,
