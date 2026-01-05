@@ -423,6 +423,28 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
             _LOGGER.warning("No interval data available for backfill")
             return
 
+        # Calculate daily totals to identify zero-consumption days (API may return
+        # zeros when data isn't available yet, e.g., during holidays)
+        daily_totals: dict[date, float] = {}
+        for interval in intervals:
+            d = interval.timestamp.date()
+            daily_totals.setdefault(d, 0.0)
+            daily_totals[d] += interval.consumption
+
+        # Filter out intervals from zero-consumption days
+        zero_days = {d for d, total in daily_totals.items() if total == 0}
+        if zero_days:
+            _LOGGER.warning(
+                "Skipping %d days with zero consumption (data not yet available): %s",
+                len(zero_days),
+                sorted(zero_days),
+            )
+            intervals = [i for i in intervals if i.timestamp.date() not in zero_days]
+
+        if not intervals:
+            _LOGGER.warning("No valid interval data after filtering zero days")
+            return
+
         # Group intervals by hour for hourly statistics
         hourly_data: dict[datetime, float] = {}
         for interval in intervals:
@@ -572,6 +594,28 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
                 start_date,
                 data_date,
             )
+            return
+
+        # Calculate daily totals to identify zero-consumption days (API may return
+        # zeros when data isn't available yet, e.g., during holidays)
+        daily_totals: dict[date, float] = {}
+        for interval in intervals:
+            d = interval.timestamp.date()
+            daily_totals.setdefault(d, 0.0)
+            daily_totals[d] += interval.consumption
+
+        # Filter out intervals from zero-consumption days
+        zero_days = {d for d, total in daily_totals.items() if total == 0}
+        if zero_days:
+            _LOGGER.warning(
+                "Skipping %d days with zero consumption (data not yet available): %s",
+                len(zero_days),
+                sorted(zero_days),
+            )
+            intervals = [i for i in intervals if i.timestamp.date() not in zero_days]
+
+        if not intervals:
+            _LOGGER.debug("No valid interval data after filtering zero days")
             return
 
         _LOGGER.debug("Received %d intervals for statistics update", len(intervals))
