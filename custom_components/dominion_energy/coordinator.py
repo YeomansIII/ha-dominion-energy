@@ -269,7 +269,9 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
             latest = intervals[-1] if intervals else None
 
             # Insert/update external statistics for Energy Dashboard
-            await self._insert_statistics(account_number, meter_number, yesterday)
+            await self._insert_statistics(
+                account_number, meter_number, yesterday, bill_forecast
+            )
 
             return DominionEnergyData(
                 intervals=intervals,
@@ -345,62 +347,162 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
             fixed_rate = options.get(CONF_FIXED_RATE, DEFAULT_FIXED_RATE)
             return round(total_kwh * fixed_rate, 2)
 
+    def _calculate_interval_cost(
+        self,
+        interval: IntervalUsageData,
+        bill_forecast: BillForecast | None,
+    ) -> float:
+        """Calculate cost for a single interval based on configured mode.
+
+        Used for building cost statistics alongside consumption statistics.
+        """
+        options = self.config_entry.options
+        cost_mode = options.get(CONF_COST_MODE, COST_MODE_API)
+
+        if cost_mode == COST_MODE_API and bill_forecast:
+            rate = bill_forecast.derived_rate
+            if rate:
+                return interval.consumption * rate
+            # Fallback to fixed if no derived rate available
+            return interval.consumption * options.get(
+                CONF_FIXED_RATE, DEFAULT_FIXED_RATE
+            )
+
+        elif cost_mode == COST_MODE_TOU:
+            peak_start = options.get(CONF_PEAK_START_HOUR, DEFAULT_PEAK_START_HOUR)
+            peak_end = options.get(CONF_PEAK_END_HOUR, DEFAULT_PEAK_END_HOUR)
+            peak_rate = options.get(CONF_PEAK_RATE, DEFAULT_PEAK_RATE)
+            off_peak_rate = options.get(CONF_OFF_PEAK_RATE, DEFAULT_OFF_PEAK_RATE)
+
+            hour = interval.timestamp.hour
+            if peak_start <= hour < peak_end:
+                return interval.consumption * peak_rate
+            return interval.consumption * off_peak_rate
+
+        else:
+            # Fixed rate
+            fixed_rate = options.get(CONF_FIXED_RATE, DEFAULT_FIXED_RATE)
+            return interval.consumption * fixed_rate
+
     async def _insert_statistics(
         self,
         account_number: str,
         meter_number: str,
         data_date: date,
+        bill_forecast: BillForecast | None,
     ) -> None:
         """Insert or update external statistics for Energy Dashboard integration.
 
         Statistics are stored with hourly granularity, aggregated from 30-minute
         interval data. On first setup, backfills BACKFILL_DAYS days of history.
-        """
-        stat_id = f"{DOMAIN}:{account_number}_energy_consumption"
-        _LOGGER.debug("Checking statistics for %s (data_date=%s)", stat_id, data_date)
 
-        # Check if we have existing statistics
-        last_stat = await get_instance(self.hass).async_add_executor_job(
-            get_last_statistics, self.hass, 1, stat_id, True, {"sum"}
+        Creates two statistics:
+        - {account}_energy_consumption (kWh)
+        - {account}_energy_cost (USD)
+        """
+        consumption_stat_id = f"{DOMAIN}:{account_number}_energy_consumption"
+        cost_stat_id = f"{DOMAIN}:{account_number}_energy_cost"
+        _LOGGER.debug(
+            "Checking statistics for %s and %s (data_date=%s)",
+            consumption_stat_id,
+            cost_stat_id,
+            data_date,
         )
 
-        if not last_stat.get(stat_id):
-            # No existing statistics found
+        # Check if we have existing consumption statistics
+        last_stat = await get_instance(self.hass).async_add_executor_job(
+            get_last_statistics, self.hass, 1, consumption_stat_id, True, {"sum"}
+        )
+
+        # Also check cost statistics
+        last_cost_stat = await get_instance(self.hass).async_add_executor_job(
+            get_last_statistics, self.hass, 1, cost_stat_id, True, {"sum"}
+        )
+
+        consumption_exists = bool(last_stat.get(consumption_stat_id))
+        cost_exists = bool(last_cost_stat.get(cost_stat_id))
+
+        if not consumption_exists:
+            # No consumption statistics - backfill both consumption and cost
             if self._backfill_initiated:
                 # Backfill was already started, waiting for recorder to commit
                 _LOGGER.debug(
                     "Backfill already initiated for %s, waiting for recorder to commit",
-                    stat_id,
+                    consumption_stat_id,
                 )
                 return
 
-            # First time - backfill historical data
             _LOGGER.info(
                 "First statistics update for %s - backfilling %d days of data",
                 account_number,
                 BACKFILL_DAYS,
             )
             self._backfill_initiated = True
-            await self._backfill_statistics(account_number, meter_number, stat_id)
+            await self._backfill_statistics(
+                account_number,
+                meter_number,
+                consumption_stat_id=consumption_stat_id,
+                cost_stat_id=cost_stat_id,
+                bill_forecast=bill_forecast,
+            )
+        elif not cost_exists:
+            # Consumption exists but cost doesn't - backfill cost only (upgrade path)
+            if self._backfill_initiated:
+                _LOGGER.debug(
+                    "Backfill already initiated for %s, waiting for recorder to commit",
+                    cost_stat_id,
+                )
+                return
+
+            _LOGGER.info(
+                "Cost statistics missing for %s - backfilling %d days of cost data",
+                account_number,
+                BACKFILL_DAYS,
+            )
+            self._backfill_initiated = True
+            await self._backfill_statistics(
+                account_number,
+                meter_number,
+                consumption_stat_id=None,  # Don't backfill consumption
+                cost_stat_id=cost_stat_id,
+                bill_forecast=bill_forecast,
+            )
         else:
-            # Statistics exist - reset backfill flag and do incremental update
+            # Both statistics exist - reset backfill flag and do incremental update
             self._backfill_initiated = False
             _LOGGER.debug(
                 "Found existing statistics for %s, performing incremental update",
-                stat_id,
+                consumption_stat_id,
             )
             await self._update_statistics(
-                account_number, meter_number, stat_id, last_stat, data_date
+                account_number,
+                meter_number,
+                consumption_stat_id,
+                cost_stat_id,
+                last_stat,
+                last_cost_stat,
+                data_date,
+                bill_forecast,
             )
 
     async def _backfill_statistics(
         self,
         account_number: str,
         meter_number: str,
-        stat_id: str,
+        consumption_stat_id: str | None,
+        cost_stat_id: str | None,
+        bill_forecast: BillForecast | None,
     ) -> None:
-        """Backfill historical statistics for initial setup."""
+        """Backfill historical statistics for initial setup or upgrade.
+
+        Args:
+            consumption_stat_id: If provided, backfill consumption statistics.
+            cost_stat_id: If provided, backfill cost statistics.
+
+        At least one stat ID must be provided.
+        """
         assert self._client is not None
+        assert consumption_stat_id or cost_stat_id
 
         today = date.today()
         end_date = today - timedelta(days=1)  # Yesterday
@@ -446,70 +548,107 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
             return
 
         # Group intervals by hour for hourly statistics
-        hourly_data: dict[datetime, float] = {}
+        hourly_consumption: dict[datetime, float] = {}
+        hourly_cost: dict[datetime, float] = {}
         for interval in intervals:
-            # Normalize to hour start
             hour_start = interval.timestamp.replace(minute=0, second=0, microsecond=0)
-            if hour_start not in hourly_data:
-                hourly_data[hour_start] = 0.0
-            hourly_data[hour_start] += interval.consumption
-
-        # Build statistics with cumulative sum
-        consumption_statistics: list[StatisticData] = []
-        consumption_sum = 0.0
-
-        for hour_start in sorted(hourly_data.keys()):
-            consumption = hourly_data[hour_start]
-            consumption_sum += consumption
-            # Ensure timezone-aware datetime
-            aware_dt = dt_util.as_utc(hour_start)
-            consumption_statistics.append(
-                StatisticData(start=aware_dt, state=consumption, sum=consumption_sum)
+            if hour_start not in hourly_consumption:
+                hourly_consumption[hour_start] = 0.0
+                hourly_cost[hour_start] = 0.0
+            hourly_consumption[hour_start] += interval.consumption
+            hourly_cost[hour_start] += self._calculate_interval_cost(
+                interval, bill_forecast
             )
 
-        if not consumption_statistics:
-            _LOGGER.warning("No statistics to insert after processing intervals")
-            return
+        # Build statistics with cumulative sums
+        consumption_statistics: list[StatisticData] = []
+        cost_statistics: list[StatisticData] = []
+        consumption_sum = 0.0
+        cost_sum = 0.0
 
-        # Create metadata for the statistic
-        metadata = StatisticMetaData(
-            mean_type=StatisticMeanType.NONE,
-            has_sum=True,
-            name=f"Dominion Energy {account_number} consumption",
-            source=DOMAIN,
-            statistic_id=stat_id,
-            unit_class="energy",
-            unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
-        )
+        for hour_start in sorted(hourly_consumption.keys()):
+            aware_dt = dt_util.as_utc(hour_start)
 
-        _LOGGER.debug(
-            "Adding %d hourly statistics for %s", len(consumption_statistics), stat_id
-        )
-        async_add_external_statistics(self.hass, metadata, consumption_statistics)
+            if consumption_stat_id:
+                consumption = hourly_consumption[hour_start]
+                consumption_sum += consumption
+                consumption_statistics.append(
+                    StatisticData(
+                        start=aware_dt, state=consumption, sum=consumption_sum
+                    )
+                )
+
+            if cost_stat_id:
+                cost = hourly_cost[hour_start]
+                cost_sum += cost
+                cost_statistics.append(
+                    StatisticData(start=aware_dt, state=cost, sum=cost_sum)
+                )
+
+        # Insert consumption statistics if requested
+        if consumption_stat_id and consumption_statistics:
+            consumption_metadata = StatisticMetaData(
+                mean_type=StatisticMeanType.NONE,
+                has_sum=True,
+                name=f"Dominion Energy {account_number} consumption",
+                source=DOMAIN,
+                statistic_id=consumption_stat_id,
+                unit_class="energy",
+                unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+            )
+            _LOGGER.info(
+                "Adding %d hourly consumption statistics for %s",
+                len(consumption_statistics),
+                consumption_stat_id,
+            )
+            async_add_external_statistics(
+                self.hass, consumption_metadata, consumption_statistics
+            )
+
+        # Insert cost statistics if requested
+        if cost_stat_id and cost_statistics:
+            cost_metadata = StatisticMetaData(
+                mean_type=StatisticMeanType.NONE,
+                has_sum=True,
+                name=f"Dominion Energy {account_number} cost",
+                source=DOMAIN,
+                statistic_id=cost_stat_id,
+                unit_class=None,
+                unit_of_measurement=None,
+            )
+            _LOGGER.info(
+                "Adding %d hourly cost statistics for %s",
+                len(cost_statistics),
+                cost_stat_id,
+            )
+            async_add_external_statistics(self.hass, cost_metadata, cost_statistics)
 
     async def _update_statistics(
         self,
         account_number: str,
         meter_number: str,
-        stat_id: str,
+        consumption_stat_id: str,
+        cost_stat_id: str,
         last_stat: dict,
+        last_cost_stat: dict,
         data_date: date,
+        bill_forecast: BillForecast | None,
     ) -> None:
         """Update statistics with new data since last recorded statistic."""
         assert self._client is not None
 
         try:
-            # Get the last recorded statistic time and sum
-            last_stat_data = last_stat[stat_id][0]
+            # Get the last recorded statistic time and sum for consumption
+            last_stat_data = last_stat[consumption_stat_id][0]
             last_stat_start = last_stat_data["start"]
-            current_sum = float(last_stat_data.get("sum") or 0)
+            consumption_sum = float(last_stat_data.get("sum") or 0)
 
             _LOGGER.debug(
                 "Last statistic for %s: start=%s (type=%s), sum=%.3f",
-                stat_id,
+                consumption_stat_id,
                 last_stat_start,
                 type(last_stat_start).__name__,
-                current_sum,
+                consumption_sum,
             )
 
             # Convert to datetime for comparison
@@ -538,11 +677,19 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
         except (KeyError, IndexError, TypeError, ValueError) as err:
             _LOGGER.warning(
                 "Error parsing last statistic for %s: %s (last_stat=%s)",
-                stat_id,
+                consumption_stat_id,
                 err,
                 last_stat,
             )
             return
+
+        # Get the last cost sum (default to 0 if cost stats don't exist yet)
+        cost_sum = 0.0
+        if last_cost_stat.get(cost_stat_id):
+            try:
+                cost_sum = float(last_cost_stat[cost_stat_id][0].get("sum") or 0)
+            except (KeyError, IndexError, TypeError, ValueError):
+                _LOGGER.debug("Could not get last cost sum, starting from 0")
 
         # Check if we need to fetch new data
         if last_stat_date >= data_date:
@@ -570,10 +717,11 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
             start_date = oldest_available
 
         _LOGGER.info(
-            "Fetching statistics update from %s to %s (current_sum=%.3f)",
+            "Fetching statistics update from %s to %s (consumption_sum=%.3f, cost_sum=%.3f)",
             start_date,
             data_date,
-            current_sum,
+            consumption_sum,
+            cost_sum,
         )
 
         try:
@@ -620,43 +768,70 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
 
         _LOGGER.debug("Received %d intervals for statistics update", len(intervals))
 
-        # Group intervals by hour
-        hourly_data: dict[datetime, float] = {}
+        # Group intervals by hour (consumption and cost)
+        hourly_consumption: dict[datetime, float] = {}
+        hourly_cost: dict[datetime, float] = {}
         for interval in intervals:
             hour_start = interval.timestamp.replace(minute=0, second=0, microsecond=0)
-            if hour_start not in hourly_data:
-                hourly_data[hour_start] = 0.0
-            hourly_data[hour_start] += interval.consumption
+            if hour_start not in hourly_consumption:
+                hourly_consumption[hour_start] = 0.0
+                hourly_cost[hour_start] = 0.0
+            hourly_consumption[hour_start] += interval.consumption
+            hourly_cost[hour_start] += self._calculate_interval_cost(
+                interval, bill_forecast
+            )
 
         # Build new statistics
         consumption_statistics: list[StatisticData] = []
+        cost_statistics: list[StatisticData] = []
 
-        for hour_start in sorted(hourly_data.keys()):
-            consumption = hourly_data[hour_start]
-            current_sum += consumption
+        for hour_start in sorted(hourly_consumption.keys()):
+            consumption = hourly_consumption[hour_start]
+            cost = hourly_cost[hour_start]
+            consumption_sum += consumption
+            cost_sum += cost
             aware_dt = dt_util.as_utc(hour_start)
             consumption_statistics.append(
-                StatisticData(start=aware_dt, state=consumption, sum=current_sum)
+                StatisticData(start=aware_dt, state=consumption, sum=consumption_sum)
+            )
+            cost_statistics.append(
+                StatisticData(start=aware_dt, state=cost, sum=cost_sum)
             )
 
         if not consumption_statistics:
             return
 
-        # Create metadata
-        metadata = StatisticMetaData(
+        # Create metadata for consumption
+        consumption_metadata = StatisticMetaData(
             mean_type=StatisticMeanType.NONE,
             has_sum=True,
             name=f"Dominion Energy {account_number} consumption",
             source=DOMAIN,
-            statistic_id=stat_id,
+            statistic_id=consumption_stat_id,
             unit_class="energy",
             unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         )
 
-        _LOGGER.info(
-            "Adding %d new hourly statistics for %s (sum=%.3f)",
-            len(consumption_statistics),
-            stat_id,
-            current_sum,
+        # Create metadata for cost (following Opower pattern)
+        cost_metadata = StatisticMetaData(
+            mean_type=StatisticMeanType.NONE,
+            has_sum=True,
+            name=f"Dominion Energy {account_number} cost",
+            source=DOMAIN,
+            statistic_id=cost_stat_id,
+            unit_class=None,
+            unit_of_measurement=None,
         )
-        async_add_external_statistics(self.hass, metadata, consumption_statistics)
+
+        _LOGGER.info(
+            "Adding %d new hourly statistics for %s (sum=%.3f) and %s (sum=%.3f)",
+            len(consumption_statistics),
+            consumption_stat_id,
+            consumption_sum,
+            cost_stat_id,
+            cost_sum,
+        )
+        async_add_external_statistics(
+            self.hass, consumption_metadata, consumption_statistics
+        )
+        async_add_external_statistics(self.hass, cost_metadata, cost_statistics)
