@@ -26,6 +26,7 @@ CONF_PEAK_END_HOUR: Final = "peak_end_hour"
 COST_MODE_FIXED: Final = "fixed"
 COST_MODE_TOU: Final = "time_of_use"
 COST_MODE_API: Final = "api_estimate"
+COST_MODE_SCHEDULE_1: Final = "schedule_1"
 
 # Update interval (matches 30-minute interval data granularity)
 UPDATE_INTERVAL_MINUTES: Final = 30

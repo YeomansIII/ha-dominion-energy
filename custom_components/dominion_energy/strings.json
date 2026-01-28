@@ -97,23 +97,44 @@
     "step": {
       "init": {
         "title": "Cost Calculation Settings",
-        "description": "Configure how energy costs are calculated.",
+        "description": "Select how energy costs are calculated.",
         "data": {
-          "cost_mode": "Cost calculation method",
-          "fixed_rate": "Fixed rate ($/kWh)",
+          "cost_mode": "Cost calculation method"
+        },
+        "data_description": {
+          "cost_mode": "How to calculate energy costs"
+        }
+      },
+      "fixed_rate": {
+        "title": "Fixed Rate Settings",
+        "description": "Enter the fixed rate applied to all usage.",
+        "data": {
+          "fixed_rate": "Fixed rate ($/kWh)"
+        },
+        "data_description": {
+          "fixed_rate": "Single rate applied to all kWh consumed"
+        }
+      },
+      "tou": {
+        "title": "Time-of-Use Rate Settings",
+        "description": "Configure peak and off-peak rates and hours.",
+        "data": {
           "peak_rate": "Peak rate ($/kWh)",
           "off_peak_rate": "Off-peak rate ($/kWh)",
           "peak_start_hour": "Peak start hour (0-23)",
           "peak_end_hour": "Peak end hour (0-23)"
         },
         "data_description": {
-          "cost_mode": "How to calculate energy costs",
-          "fixed_rate": "Single rate for all usage (used with Fixed Rate mode)",
-          "peak_rate": "Rate during peak hours (used with Time-of-Use mode)",
-          "off_peak_rate": "Rate during off-peak hours (used with Time-of-Use mode)",
+          "peak_rate": "Rate during peak hours",
+          "off_peak_rate": "Rate during off-peak hours",
           "peak_start_hour": "Hour when peak pricing starts (0-23)",
           "peak_end_hour": "Hour when peak pricing ends (0-23)"
         }
+      },
+      "schedule1": {
+        "title": "Schedule 1 - VA Residential",
+        "description": "Costs will be calculated using the full Dominion Energy Virginia residential tariff ({schedule_name}), effective {effective_date}. This includes tiered distribution/generation rates, seasonal pricing, all riders, and consumption taxes. No additional configuration is needed.",
+        "submit": "Confirm"
       }
     }
   },

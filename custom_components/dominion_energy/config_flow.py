@@ -50,6 +50,7 @@ from .const import (
     CONF_USERNAME,
     COST_MODE_API,
     COST_MODE_FIXED,
+    COST_MODE_SCHEDULE_1,
     COST_MODE_TOU,
     DEFAULT_FIXED_RATE,
     DEFAULT_OFF_PEAK_RATE,
@@ -58,6 +59,7 @@ from .const import (
     DEFAULT_PEAK_START_HOUR,
     DOMAIN,
 )
+from .rates import VA_SCHEDULE_1
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -628,13 +630,26 @@ class DominionEnergyOptionsFlow(OptionsFlow):
     def __init__(self, config_entry: ConfigEntry) -> None:
         """Initialize options flow."""
         self._config_entry = config_entry
+        self._selected_mode: str | None = None
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Manage the options."""
+        """Step 1: Select cost calculation mode."""
         if user_input is not None:
-            return self.async_create_entry(title="", data=user_input)
+            self._selected_mode = user_input[CONF_COST_MODE]
+
+            if self._selected_mode == COST_MODE_FIXED:
+                return await self.async_step_fixed_rate()
+            if self._selected_mode == COST_MODE_TOU:
+                return await self.async_step_tou()
+            if self._selected_mode == COST_MODE_SCHEDULE_1:
+                return await self.async_step_schedule1()
+
+            # API Estimate — no additional config needed
+            return self.async_create_entry(
+                title="", data={CONF_COST_MODE: COST_MODE_API}
+            )
 
         current_options = self._config_entry.options
 
@@ -650,31 +665,81 @@ class DominionEnergyOptionsFlow(OptionsFlow):
                             COST_MODE_API: "API Estimate (from bill)",
                             COST_MODE_FIXED: "Fixed Rate",
                             COST_MODE_TOU: "Time-of-Use",
+                            COST_MODE_SCHEDULE_1: "Schedule 1 - VA Residential",
                         }
                     ),
-                    vol.Optional(
+                }
+            ),
+        )
+
+    async def async_step_fixed_rate(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Step 2a: Configure fixed rate."""
+        if user_input is not None:
+            return self.async_create_entry(
+                title="",
+                data={
+                    CONF_COST_MODE: COST_MODE_FIXED,
+                    CONF_FIXED_RATE: user_input[CONF_FIXED_RATE],
+                },
+            )
+
+        current_options = self._config_entry.options
+
+        return self.async_show_form(
+            step_id="fixed_rate",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
                         CONF_FIXED_RATE,
                         default=current_options.get(
                             CONF_FIXED_RATE, DEFAULT_FIXED_RATE
                         ),
                     ): vol.Coerce(float),
-                    vol.Optional(
+                }
+            ),
+        )
+
+    async def async_step_tou(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Step 2b: Configure time-of-use rates."""
+        if user_input is not None:
+            return self.async_create_entry(
+                title="",
+                data={
+                    CONF_COST_MODE: COST_MODE_TOU,
+                    CONF_PEAK_RATE: user_input[CONF_PEAK_RATE],
+                    CONF_OFF_PEAK_RATE: user_input[CONF_OFF_PEAK_RATE],
+                    CONF_PEAK_START_HOUR: user_input[CONF_PEAK_START_HOUR],
+                    CONF_PEAK_END_HOUR: user_input[CONF_PEAK_END_HOUR],
+                },
+            )
+
+        current_options = self._config_entry.options
+
+        return self.async_show_form(
+            step_id="tou",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
                         CONF_PEAK_RATE,
                         default=current_options.get(CONF_PEAK_RATE, DEFAULT_PEAK_RATE),
                     ): vol.Coerce(float),
-                    vol.Optional(
+                    vol.Required(
                         CONF_OFF_PEAK_RATE,
                         default=current_options.get(
                             CONF_OFF_PEAK_RATE, DEFAULT_OFF_PEAK_RATE
                         ),
                     ): vol.Coerce(float),
-                    vol.Optional(
+                    vol.Required(
                         CONF_PEAK_START_HOUR,
                         default=current_options.get(
                             CONF_PEAK_START_HOUR, DEFAULT_PEAK_START_HOUR
                         ),
                     ): vol.All(vol.Coerce(int), vol.Range(min=0, max=23)),
-                    vol.Optional(
+                    vol.Required(
                         CONF_PEAK_END_HOUR,
                         default=current_options.get(
                             CONF_PEAK_END_HOUR, DEFAULT_PEAK_END_HOUR
@@ -682,4 +747,22 @@ class DominionEnergyOptionsFlow(OptionsFlow):
                     ): vol.All(vol.Coerce(int), vol.Range(min=0, max=23)),
                 }
             ),
+        )
+
+    async def async_step_schedule1(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Step 2c: Confirm Schedule 1 selection."""
+        if user_input is not None:
+            return self.async_create_entry(
+                title="", data={CONF_COST_MODE: COST_MODE_SCHEDULE_1}
+            )
+
+        return self.async_show_form(
+            step_id="schedule1",
+            data_schema=vol.Schema({}),
+            description_placeholders={
+                "schedule_name": VA_SCHEDULE_1.name,
+                "effective_date": VA_SCHEDULE_1.effective_date,
+            },
         )

@@ -56,6 +56,7 @@ from .const import (
     CONF_REFRESH_TOKEN,
     CONF_USERNAME,
     COST_MODE_API,
+    COST_MODE_SCHEDULE_1,
     COST_MODE_TOU,
     DEFAULT_FIXED_RATE,
     DEFAULT_OFF_PEAK_RATE,
@@ -65,6 +66,7 @@ from .const import (
     DOMAIN,
     UPDATE_INTERVAL_MINUTES,
 )
+from .rates import VA_SCHEDULE_1, calculate_schedule1_interval_cost
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -316,6 +318,27 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
         options = self.config_entry.options
         cost_mode = options.get(CONF_COST_MODE, COST_MODE_API)
 
+        if cost_mode == COST_MODE_SCHEDULE_1:
+            # VA Schedule 1 with cumulative kWh tracking for tiered pricing
+            cost = 0.0
+            cumulative_kwh = 0.0
+            # Estimate billing period days from interval span
+            if len(intervals) >= 2:
+                span = intervals[-1].timestamp.date() - intervals[0].timestamp.date()
+                billing_days = max(span.days, 1)
+            else:
+                billing_days = 30
+            for interval in intervals:
+                cost += calculate_schedule1_interval_cost(
+                    interval.consumption,
+                    interval.timestamp,
+                    cumulative_kwh,
+                    VA_SCHEDULE_1,
+                    billing_period_days=billing_days,
+                )
+                cumulative_kwh += interval.consumption
+            return round(cost, 2)
+
         if cost_mode == COST_MODE_API and bill_forecast:
             # Derive rate from last bill: charges / usage
             rate = bill_forecast.derived_rate
@@ -351,13 +374,32 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
         self,
         interval: IntervalUsageData,
         bill_forecast: BillForecast | None,
+        cumulative_kwh_before: float = 0.0,
+        billing_period_days: int = 30,
     ) -> float:
         """Calculate cost for a single interval based on configured mode.
 
         Used for building cost statistics alongside consumption statistics.
+
+        Args:
+            interval: The interval usage data.
+            bill_forecast: Bill forecast for API estimate mode.
+            cumulative_kwh_before: Cumulative kWh before this interval in the
+                billing period. Used by Schedule 1 for tiered pricing.
+            billing_period_days: Days in billing period. Used by Schedule 1
+                for prorating the customer charge.
         """
         options = self.config_entry.options
         cost_mode = options.get(CONF_COST_MODE, COST_MODE_API)
+
+        if cost_mode == COST_MODE_SCHEDULE_1:
+            return calculate_schedule1_interval_cost(
+                interval.consumption,
+                interval.timestamp,
+                cumulative_kwh_before,
+                VA_SCHEDULE_1,
+                billing_period_days=billing_period_days,
+            )
 
         if cost_mode == COST_MODE_API and bill_forecast:
             rate = bill_forecast.derived_rate
@@ -548,17 +590,35 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
             return
 
         # Group intervals by hour for hourly statistics
+        # For Schedule 1, track cumulative kWh per calendar month for tiered pricing
+        cost_mode = self.config_entry.options.get(CONF_COST_MODE, COST_MODE_API)
+        is_schedule1 = cost_mode == COST_MODE_SCHEDULE_1
+        cumulative_kwh = 0.0
+        current_month: tuple[int, int] | None = None  # (year, month)
+
         hourly_consumption: dict[datetime, float] = {}
         hourly_cost: dict[datetime, float] = {}
-        for interval in intervals:
+        for interval in sorted(intervals, key=lambda i: i.timestamp):
+            # Reset cumulative counter at calendar month boundaries
+            interval_month = (interval.timestamp.year, interval.timestamp.month)
+            if is_schedule1 and interval_month != current_month:
+                cumulative_kwh = 0.0
+                current_month = interval_month
+
             hour_start = interval.timestamp.replace(minute=0, second=0, microsecond=0)
             if hour_start not in hourly_consumption:
                 hourly_consumption[hour_start] = 0.0
                 hourly_cost[hour_start] = 0.0
             hourly_consumption[hour_start] += interval.consumption
             hourly_cost[hour_start] += self._calculate_interval_cost(
-                interval, bill_forecast
+                interval,
+                bill_forecast,
+                cumulative_kwh_before=cumulative_kwh,
+                billing_period_days=30,
             )
+
+            if is_schedule1:
+                cumulative_kwh += interval.consumption
 
         # Build statistics with cumulative sums
         consumption_statistics: list[StatisticData] = []
@@ -769,17 +829,35 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
         _LOGGER.debug("Received %d intervals for statistics update", len(intervals))
 
         # Group intervals by hour (consumption and cost)
+        # For Schedule 1, track cumulative kWh per calendar month for tiered pricing
+        cost_mode = self.config_entry.options.get(CONF_COST_MODE, COST_MODE_API)
+        is_schedule1 = cost_mode == COST_MODE_SCHEDULE_1
+        cumulative_kwh = 0.0
+        current_month: tuple[int, int] | None = None
+
         hourly_consumption: dict[datetime, float] = {}
         hourly_cost: dict[datetime, float] = {}
-        for interval in intervals:
+        for interval in sorted(intervals, key=lambda i: i.timestamp):
+            # Reset cumulative counter at calendar month boundaries
+            interval_month = (interval.timestamp.year, interval.timestamp.month)
+            if is_schedule1 and interval_month != current_month:
+                cumulative_kwh = 0.0
+                current_month = interval_month
+
             hour_start = interval.timestamp.replace(minute=0, second=0, microsecond=0)
             if hour_start not in hourly_consumption:
                 hourly_consumption[hour_start] = 0.0
                 hourly_cost[hour_start] = 0.0
             hourly_consumption[hour_start] += interval.consumption
             hourly_cost[hour_start] += self._calculate_interval_cost(
-                interval, bill_forecast
+                interval,
+                bill_forecast,
+                cumulative_kwh_before=cumulative_kwh,
+                billing_period_days=30,
             )
+
+            if is_schedule1:
+                cumulative_kwh += interval.consumption
 
         # Build new statistics
         consumption_statistics: list[StatisticData] = []
