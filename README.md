@@ -77,12 +77,22 @@ This integration provides **external statistics** for the Home Assistant Energy 
 2. Under **Electricity grid**, click **Add consumption**
 3. Search for your account number or "dominion"
 4. Select the statistic: `dominion_energy:{account_number}_energy_consumption`
+5. For cost tracking, select **"Use an entity tracking the total costs"**
+6. Select the cost statistic: `dominion_energy:{account_number}_energy_cost`
+
+### Available Statistics
+
+| Statistic ID | Description |
+|--------------|-------------|
+| `dominion_energy:{account}_energy_consumption` | Cumulative energy consumption (kWh) |
+| `dominion_energy:{account}_energy_cost` | Cumulative energy cost (uses configured cost mode) |
 
 ### How It Works
 
 - The integration creates external statistics (not sensor entities) for the Energy Dashboard
 - Data is aggregated from 30-minute intervals into hourly statistics
-- **7 days of historical data** are automatically backfilled on first setup
+- **60 days of historical data** are automatically backfilled on first setup
+- Cost is calculated using your configured cost mode (API estimate, fixed rate, or TOU)
 - Statistics update daily with the previous day's data
 
 ### Why External Statistics?
@@ -92,7 +102,7 @@ The Energy Dashboard works best with cumulative statistics that track total cons
 - Provide accurate hourly breakdowns for energy analysis
 - Handle the 1-day data delay gracefully
 
-> **Tip**: The statistic ID format is `dominion_energy:{account_number}_energy_consumption`. You can find your account number in the integration's device info or on your Dominion Energy bill.
+> **Tip**: You can find your account number in the integration's device info or on your Dominion Energy bill.
 
 ## Authentication
 
