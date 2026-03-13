@@ -218,7 +218,7 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
         account_number = self.config_entry.data[CONF_ACCOUNT_NUMBER]
         meter_number = self.config_entry.data[CONF_METER_NUMBER]
 
-        today = date.today()
+        today = dt_util.now().date()
         yesterday = today - timedelta(days=1)
 
         # Handle month boundary: determine which month's data we're working with
@@ -527,6 +527,97 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
                 bill_forecast,
             )
 
+    @staticmethod
+    def _filter_incomplete_days(
+        intervals: list[IntervalUsageData],
+    ) -> list[IntervalUsageData]:
+        """Filter out days with zero or suspiciously incomplete data.
+
+        A normal day has 48 half-hour intervals (46 on DST spring-forward).
+        Days with zero total consumption or very few non-zero intervals are
+        likely not yet available from the API and should be skipped to avoid
+        recording permanent zero-value statistics.
+        """
+        daily_totals: dict[date, float] = {}
+        daily_nonzero_count: dict[date, int] = {}
+        for interval in intervals:
+            d = interval.timestamp.date()
+            daily_totals.setdefault(d, 0.0)
+            daily_totals[d] += interval.consumption
+            daily_nonzero_count.setdefault(d, 0)
+            if interval.consumption > 0:
+                daily_nonzero_count[d] += 1
+
+        # A valid day should have either zero total (vacation/away) or
+        # a reasonable number of non-zero intervals. Days with a tiny amount
+        # of consumption in just 1-2 intervals out of 46-48 are likely
+        # partially-available API data, not real usage patterns.
+        min_nonzero_intervals = 4
+        bad_days: set[date] = set()
+        for d, total in daily_totals.items():
+            if total == 0:
+                # Genuinely zero usage or no data — skip either way
+                bad_days.add(d)
+            elif daily_nonzero_count[d] < min_nonzero_intervals:
+                # Suspiciously sparse — likely incomplete API data
+                bad_days.add(d)
+
+        if bad_days:
+            _LOGGER.warning(
+                "Skipping %d days with missing/incomplete data: %s",
+                len(bad_days),
+                sorted(bad_days),
+            )
+            intervals = [i for i in intervals if i.timestamp.date() not in bad_days]
+
+        return intervals
+
+    @staticmethod
+    def _deduplicate_hourly_by_utc(
+        hourly_data: dict[datetime, float],
+    ) -> dict[datetime, float]:
+        """Merge hourly entries that map to the same UTC hour.
+
+        On DST spring-forward days, two local-time keys (e.g., 02:00 EST and
+        03:00 EDT) can map to the same UTC instant. This merges their values
+        and returns a dict keyed by UTC-converted datetimes with no duplicates.
+        """
+        utc_data: dict[datetime, float] = {}
+        for local_dt, value in hourly_data.items():
+            utc_dt = dt_util.as_utc(local_dt)
+            if utc_dt in utc_data:
+                utc_data[utc_dt] += value
+            else:
+                utc_data[utc_dt] = value
+        return utc_data
+
+    async def _get_sum_before(self, stat_id: str, before_utc: datetime) -> float | None:
+        """Get the cumulative sum just before a given UTC timestamp.
+
+        Used when re-processing an incomplete day to get the correct
+        starting sum from the previous day's last statistic.
+        """
+        # Get the last 48 stats (covers ~2 days of hourly data)
+        last_stats = await get_instance(self.hass).async_add_executor_job(
+            get_last_statistics, self.hass, 48, stat_id, True, {"sum"}
+        )
+        if not last_stats.get(stat_id):
+            return None
+
+        # Find the last stat BEFORE before_utc
+        best_sum: float | None = None
+        for stat_data in reversed(last_stats[stat_id]):
+            stat_start = stat_data["start"]
+            if isinstance(stat_start, (int, float)):
+                stat_dt = datetime.fromtimestamp(stat_start, tz=dt_util.UTC)
+            else:
+                stat_dt = stat_start
+            if stat_dt < before_utc:
+                best_sum = float(stat_data.get("sum") or 0)
+                break
+
+        return best_sum
+
     async def _backfill_statistics(
         self,
         account_number: str,
@@ -546,7 +637,7 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
         assert self._client is not None
         assert consumption_stat_id or cost_stat_id
 
-        today = date.today()
+        today = dt_util.now().date()
         end_date = today - timedelta(days=1)  # Yesterday
         start_date = today - timedelta(days=BACKFILL_DAYS)
 
@@ -567,26 +658,10 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
             _LOGGER.warning("No interval data available for backfill")
             return
 
-        # Calculate daily totals to identify zero-consumption days (API may return
-        # zeros when data isn't available yet, e.g., during holidays)
-        daily_totals: dict[date, float] = {}
-        for interval in intervals:
-            d = interval.timestamp.date()
-            daily_totals.setdefault(d, 0.0)
-            daily_totals[d] += interval.consumption
-
-        # Filter out intervals from zero-consumption days
-        zero_days = {d for d, total in daily_totals.items() if total == 0}
-        if zero_days:
-            _LOGGER.warning(
-                "Skipping %d days with zero consumption (data not yet available): %s",
-                len(zero_days),
-                sorted(zero_days),
-            )
-            intervals = [i for i in intervals if i.timestamp.date() not in zero_days]
+        intervals = self._filter_incomplete_days(intervals)
 
         if not intervals:
-            _LOGGER.warning("No valid interval data after filtering zero days")
+            _LOGGER.warning("No valid interval data after filtering incomplete days")
             return
 
         # Group intervals by hour for hourly statistics
@@ -620,29 +695,29 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
             if is_schedule1:
                 cumulative_kwh += interval.consumption
 
+        # Deduplicate by UTC to prevent duplicate-key errors in HA recorder
+        utc_consumption = self._deduplicate_hourly_by_utc(hourly_consumption)
+        utc_cost = self._deduplicate_hourly_by_utc(hourly_cost)
+
         # Build statistics with cumulative sums
         consumption_statistics: list[StatisticData] = []
         cost_statistics: list[StatisticData] = []
         consumption_sum = 0.0
         cost_sum = 0.0
 
-        for hour_start in sorted(hourly_consumption.keys()):
-            aware_dt = dt_util.as_utc(hour_start)
-
+        for utc_dt in sorted(utc_consumption.keys()):
             if consumption_stat_id:
-                consumption = hourly_consumption[hour_start]
+                consumption = utc_consumption[utc_dt]
                 consumption_sum += consumption
                 consumption_statistics.append(
-                    StatisticData(
-                        start=aware_dt, state=consumption, sum=consumption_sum
-                    )
+                    StatisticData(start=utc_dt, state=consumption, sum=consumption_sum)
                 )
 
             if cost_stat_id:
-                cost = hourly_cost[hour_start]
+                cost = utc_cost[utc_dt]
                 cost_sum += cost
                 cost_statistics.append(
-                    StatisticData(start=aware_dt, state=cost, sum=cost_sum)
+                    StatisticData(start=utc_dt, state=cost, sum=cost_sum)
                 )
 
         # Insert consumption statistics if requested
@@ -751,21 +826,58 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
             except (KeyError, IndexError, TypeError, ValueError):
                 _LOGGER.debug("Could not get last cost sum, starting from 0")
 
-        # Check if we need to fetch new data
-        if last_stat_date >= data_date:
+        # Check if we need to fetch new data.
+        # Also detect incomplete days: if the last stat is on data_date but
+        # doesn't cover the full day (last local hour < 22), re-fetch that day
+        # to fill in missing hours. This self-heals days that were previously
+        # recorded with incomplete/zero data from the API.
+        if last_stat_date > data_date:
             _LOGGER.debug(
-                "Statistics already up to date: last_stat_date=%s >= data_date=%s",
+                "Statistics already up to date: last_stat_date=%s > data_date=%s",
                 last_stat_date,
                 data_date,
             )
             return
 
-        # Fetch data from day after last stat to data_date
-        start_date = last_stat_date + timedelta(days=1)
+        if last_stat_date == data_date and last_stat_local.hour >= 22:
+            _LOGGER.debug(
+                "Statistics already up to date for %s (last hour: %d)",
+                data_date,
+                last_stat_local.hour,
+            )
+            return
+
+        if last_stat_date == data_date:
+            # Incomplete day detected — re-fetch from this day.
+            # We need the cumulative sum from BEFORE the incomplete day
+            # since we'll be replacing all of its statistics.
+            _LOGGER.info(
+                "Incomplete statistics for %s (last hour: %d), re-fetching",
+                last_stat_date,
+                last_stat_local.hour,
+            )
+            start_date = last_stat_date
+
+            # Get the sum at the end of the day BEFORE the incomplete day
+            # by subtracting the state values we're about to replace
+            day_start_utc = dt_util.as_utc(
+                last_stat_local.replace(hour=0, minute=0, second=0, microsecond=0)
+            )
+            consumption_sum_before = await self._get_sum_before(
+                consumption_stat_id, day_start_utc
+            )
+            cost_sum_before = await self._get_sum_before(cost_stat_id, day_start_utc)
+            if consumption_sum_before is not None:
+                consumption_sum = consumption_sum_before
+            if cost_sum_before is not None:
+                cost_sum = cost_sum_before
+        else:
+            # Fetch data from day after last stat to data_date
+            start_date = last_stat_date + timedelta(days=1)
 
         # Safety check: if start_date is older than API data availability (~68 days),
         # limit to BACKFILL_DAYS to avoid requesting unavailable data
-        today = date.today()
+        today = dt_util.now().date()
         oldest_available = today - timedelta(days=BACKFILL_DAYS)
         if start_date < oldest_available:
             _LOGGER.warning(
@@ -804,26 +916,10 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
             )
             return
 
-        # Calculate daily totals to identify zero-consumption days (API may return
-        # zeros when data isn't available yet, e.g., during holidays)
-        daily_totals: dict[date, float] = {}
-        for interval in intervals:
-            d = interval.timestamp.date()
-            daily_totals.setdefault(d, 0.0)
-            daily_totals[d] += interval.consumption
-
-        # Filter out intervals from zero-consumption days
-        zero_days = {d for d, total in daily_totals.items() if total == 0}
-        if zero_days:
-            _LOGGER.warning(
-                "Skipping %d days with zero consumption (data not yet available): %s",
-                len(zero_days),
-                sorted(zero_days),
-            )
-            intervals = [i for i in intervals if i.timestamp.date() not in zero_days]
+        intervals = self._filter_incomplete_days(intervals)
 
         if not intervals:
-            _LOGGER.debug("No valid interval data after filtering zero days")
+            _LOGGER.debug("No valid interval data after filtering incomplete days")
             return
 
         _LOGGER.debug("Received %d intervals for statistics update", len(intervals))
@@ -859,21 +955,24 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
             if is_schedule1:
                 cumulative_kwh += interval.consumption
 
+        # Deduplicate by UTC to prevent duplicate-key errors in HA recorder
+        utc_consumption = self._deduplicate_hourly_by_utc(hourly_consumption)
+        utc_cost = self._deduplicate_hourly_by_utc(hourly_cost)
+
         # Build new statistics
         consumption_statistics: list[StatisticData] = []
         cost_statistics: list[StatisticData] = []
 
-        for hour_start in sorted(hourly_consumption.keys()):
-            consumption = hourly_consumption[hour_start]
-            cost = hourly_cost[hour_start]
+        for utc_dt in sorted(utc_consumption.keys()):
+            consumption = utc_consumption[utc_dt]
+            cost = utc_cost[utc_dt]
             consumption_sum += consumption
             cost_sum += cost
-            aware_dt = dt_util.as_utc(hour_start)
             consumption_statistics.append(
-                StatisticData(start=aware_dt, state=consumption, sum=consumption_sum)
+                StatisticData(start=utc_dt, state=consumption, sum=consumption_sum)
             )
             cost_statistics.append(
-                StatisticData(start=aware_dt, state=cost, sum=cost_sum)
+                StatisticData(start=utc_dt, state=cost, sum=cost_sum)
             )
 
         if not consumption_statistics:
