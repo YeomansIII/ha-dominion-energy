@@ -1,6 +1,22 @@
-# Dominion Energy Home Assistant Integration
+<p align="center">
+  <img src="assets/jaws-icon-raster-128.png" alt="Dominion Energy Integration Logo" width="128" height="128">
+</p>
 
-A Home Assistant custom integration for monitoring your Dominion Energy electricity usage with high-resolution 30-minute interval data.
+<h1 align="center">Dominion Energy for Home Assistant</h1>
+
+<p align="center">
+  <a href="https://github.com/YeomansIII/ha-dominion-energy/releases"><img src="https://img.shields.io/github/v/release/YeomansIII/ha-dominion-energy?style=flat-square" alt="GitHub Release"></a>
+  <a href="https://github.com/YeomansIII/ha-dominion-energy/blob/main/LICENSE"><img src="https://img.shields.io/github/license/YeomansIII/ha-dominion-energy?style=flat-square" alt="License"></a>
+  <a href="https://github.com/YeomansIII/ha-dominion-energy/issues"><img src="https://img.shields.io/github/issues/YeomansIII/ha-dominion-energy?style=flat-square" alt="Issues"></a>
+  <img src="https://img.shields.io/badge/Home%20Assistant-blue?style=flat-square&logo=homeassistant&logoColor=white" alt="Home Assistant">
+  <a href="https://github.com/hacs/integration"><img src="https://img.shields.io/badge/HACS-Custom-orange?style=flat-square" alt="HACS"></a>
+</p>
+
+<p align="center">
+  Monitor your Dominion Energy electricity usage in Home Assistant with high-resolution 30-minute interval data.
+</p>
+
+---
 
 ## Features
 
