@@ -618,6 +618,81 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
 
         return best_sum
 
+    async def _find_last_complete_day_stat(
+        self,
+        consumption_stat_id: str,
+        cost_stat_id: str,
+    ) -> tuple[date | None, float, float]:
+        """Walk backwards to find the last stat from a fully-populated day.
+
+        A fully-populated day has non-zero data extending to at least hour 22
+        local time. Days with data only at hour 00:00 are artifacts from
+        a previous buggy version and should be skipped.
+
+        Returns (date, consumption_sum, cost_sum) of the last stat from a
+        complete day, or (None, 0.0, 0.0) if none found.
+        """
+        local_tz = dt_util.get_default_time_zone()
+
+        # Get enough stats to cover the backfill window (~68 days * 24 hours)
+        num_stats = BACKFILL_DAYS * 24
+        last_stats = await get_instance(self.hass).async_add_executor_job(
+            get_last_statistics,
+            self.hass,
+            num_stats,
+            consumption_stat_id,
+            True,
+            {"state", "sum"},
+        )
+        if not last_stats.get(consumption_stat_id):
+            return None, 0.0, 0.0
+
+        # Walk backwards to find the last stat with state > 0 at hour >= 22
+        # (indicating the end of a fully-populated day, not a sparse artifact)
+        for stat_data in reversed(last_stats[consumption_stat_id]):
+            state = float(stat_data.get("state") or 0)
+            if state <= 0:
+                continue
+
+            stat_start = stat_data["start"]
+            if isinstance(stat_start, (int, float)):
+                stat_dt = datetime.fromtimestamp(stat_start, tz=dt_util.UTC)
+            else:
+                stat_dt = stat_start
+            stat_local = stat_dt.astimezone(local_tz)
+
+            if stat_local.hour < 22:
+                # Non-zero but early in the day — could be a sparse artifact.
+                # Keep looking further back for a complete day.
+                continue
+
+            consumption_sum = float(stat_data.get("sum") or 0)
+
+            # Get the matching cost sum
+            cost_sum = 0.0
+            last_cost_stats = await get_instance(self.hass).async_add_executor_job(
+                get_last_statistics,
+                self.hass,
+                num_stats,
+                cost_stat_id,
+                True,
+                {"sum"},
+            )
+            if last_cost_stats.get(cost_stat_id):
+                for cost_data in reversed(last_cost_stats[cost_stat_id]):
+                    cost_start = cost_data["start"]
+                    if isinstance(cost_start, (int, float)):
+                        cost_dt = datetime.fromtimestamp(cost_start, tz=dt_util.UTC)
+                    else:
+                        cost_dt = cost_start
+                    if cost_dt <= stat_dt:
+                        cost_sum = float(cost_data.get("sum") or 0)
+                        break
+
+            return stat_local.date(), consumption_sum, cost_sum
+
+        return None, 0.0, 0.0
+
     async def _backfill_statistics(
         self,
         account_number: str,
@@ -831,7 +906,45 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
         # doesn't cover the full day (last local hour < 22), re-fetch that day
         # to fill in missing hours. This self-heals days that were previously
         # recorded with incomplete/zero data from the API.
-        if last_stat_date > data_date:
+
+        # Detect stale zero-value stats from a previous buggy version.
+        # If the last stat has state=0, walk backwards through recent stats
+        # to find the last non-zero entry, then re-fetch from that point.
+        last_state = float(last_stat_data.get("state") or 0)
+        if last_state == 0 and last_stat_date >= data_date:
+            _LOGGER.info(
+                "Last statistic has state=0 at %s — scanning for last non-zero entry",
+                last_stat_date,
+            )
+            (
+                last_good_date,
+                last_good_sum,
+                last_good_cost_sum,
+            ) = await self._find_last_complete_day_stat(
+                consumption_stat_id, cost_stat_id
+            )
+            if last_good_date is not None:
+                _LOGGER.info(
+                    "Last non-zero statistic on %s (sum=%.3f). "
+                    "Re-fetching from %s to %s to heal stale zeros.",
+                    last_good_date,
+                    last_good_sum,
+                    last_good_date + timedelta(days=1),
+                    data_date,
+                )
+                start_date = last_good_date + timedelta(days=1)
+                consumption_sum = last_good_sum
+                cost_sum = last_good_cost_sum
+            else:
+                # All stats are zero — re-fetch everything
+                _LOGGER.warning(
+                    "All recent statistics are zero. Re-fetching from %d days ago.",
+                    BACKFILL_DAYS,
+                )
+                start_date = dt_util.now().date() - timedelta(days=BACKFILL_DAYS)
+                consumption_sum = 0.0
+                cost_sum = 0.0
+        elif last_stat_date > data_date:
             _LOGGER.debug(
                 "Statistics already up to date: last_stat_date=%s > data_date=%s",
                 last_stat_date,
@@ -839,7 +952,7 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
             )
             return
 
-        if last_stat_date == data_date and last_stat_local.hour >= 22:
+        elif last_stat_date == data_date and last_stat_local.hour >= 22:
             _LOGGER.debug(
                 "Statistics already up to date for %s (last hour: %d)",
                 data_date,
@@ -847,7 +960,7 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
             )
             return
 
-        if last_stat_date == data_date:
+        elif last_stat_date == data_date:
             # Incomplete day detected — re-fetch from this day.
             # We need the cumulative sum from BEFORE the incomplete day
             # since we'll be replacing all of its statistics.
