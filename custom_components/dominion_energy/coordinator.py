@@ -96,6 +96,8 @@ class DominionEnergyData:
     monthly_total: float
     daily_cost: float
     monthly_cost: float
+    daily_generation_total: float
+    monthly_generation_total: float
     bill_forecast: BillForecast | None
     # Date tracking for delayed data
     data_date: date | None  # Which day the daily data represents (yesterday)
@@ -132,6 +134,11 @@ class DominionEnergyData:
         if self.sc_forecast:
             return self.sc_forecast.period_end
         return None
+
+    @property
+    def latest_generation(self) -> float | None:
+        """Get the latest interval generation value if present. """
+        return self.latest_interval.generation if self.latest_interval else None
 
 
 class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
@@ -332,6 +339,7 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
 
             # Calculate daily total from intervals
             daily_total = sum(i.consumption for i in intervals)
+            daily_generation_total = sum(i.generation for i in intervals)
 
             # For monthly, fetch from start of month to yesterday
             if month_start < yesterday:
@@ -339,10 +347,12 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
                     month_start, yesterday
                 )
                 monthly_total = sum(i.consumption for i in monthly_intervals)
+                monthly_generation_total = sum(i.generation for i in monthly_intervals)
             else:
                 # First day of month or same day
                 monthly_intervals = intervals
                 monthly_total = daily_total
+                monthly_generation_total = daily_generation_total
 
             # Fetch bill forecast for cost calculation
             bill_forecast: BillForecast | None = None
@@ -372,7 +382,9 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
                 intervals=intervals,
                 latest_interval=latest,
                 daily_total=daily_total,
+                daily_generation_total=daily_generation_total,
                 monthly_total=monthly_total,
+                monthly_generation_total=monthly_generation_total,
                 daily_cost=daily_cost,
                 monthly_cost=monthly_cost,
                 bill_forecast=bill_forecast,
@@ -637,11 +649,13 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
         Statistics are stored with hourly granularity, aggregated from 30-minute
         interval data. On first setup, backfills BACKFILL_DAYS days of history.
 
-        Creates two statistics:
+        Creates three statistics:
         - {account}_energy_consumption (kWh)
+        - {account}_energy_generation (kWh)
         - {account}_energy_cost (USD)
         """
         consumption_stat_id = f"{DOMAIN}:{account_number}_energy_consumption"
+        generation_stat_id = f"{DOMAIN}:{account_number}_energy_generation"
         cost_stat_id = f"{DOMAIN}:{account_number}_energy_cost"
         _LOGGER.debug(
             "Checking statistics for %s and %s (data_date=%s)",
@@ -655,16 +669,22 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
             get_last_statistics, self.hass, 1, consumption_stat_id, True, {"sum"}
         )
 
+        # Check if we have existing generation statistics
+        last_gen_stat = await get_instance(self.hass).async_add_executor_job(
+            get_last_statistics, self.hass, 1, generation_stat_id, True, {"sum"}
+        )
+
         # Also check cost statistics
         last_cost_stat = await get_instance(self.hass).async_add_executor_job(
             get_last_statistics, self.hass, 1, cost_stat_id, True, {"sum"}
         )
 
         consumption_exists = bool(last_stat.get(consumption_stat_id))
+        generation_exists = bool(last_gen_stat.get(generation_stat_id))
         cost_exists = bool(last_cost_stat.get(cost_stat_id))
 
         if not consumption_exists:
-            # No consumption statistics - backfill both consumption and cost
+            # No consumption statistics - backfill all
             if self._backfill_initiated:
                 # Backfill was already started, waiting for recorder to commit
                 _LOGGER.debug(
@@ -682,11 +702,12 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
             await self._backfill_statistics(
                 account_number,
                 consumption_stat_id=consumption_stat_id,
+                generation_stat_id=generation_stat_id,
                 cost_stat_id=cost_stat_id,
                 derived_rate=derived_rate,
             )
         elif not cost_exists:
-            # Consumption exists but cost doesn't - backfill cost only (upgrade path)
+            # Consumption exists but cost doesn't - backfill cost only and generation (upgrade path)
             if self._backfill_initiated:
                 _LOGGER.debug(
                     "Backfill already initiated for %s, waiting for recorder to commit",
@@ -703,11 +724,35 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
             await self._backfill_statistics(
                 account_number,
                 consumption_stat_id=None,  # Don't backfill consumption
+                generation_stat_id=generation_stat_id,
                 cost_stat_id=cost_stat_id,
                 derived_rate=derived_rate,
             )
+        elif not generation_exists:
+            # Only generation is missing - backfill generation only
+            if self._backfill_initiated:
+                _LOGGER.debug(
+                    "Backfill already initiated for %s, waiting for recorder to commit",
+                    cost_stat_id,
+                )
+                return
+
+            _LOGGER.info(
+                "Cost statistics missing for %s - backfilling %d days of cost data",
+                account_number,
+                BACKFILL_DAYS,
+            )
+            self._backfill_initiated = True
+            await self._backfill_statistics(
+                account_number,
+                consumption_stat_id=None,  # Don't backfill consumption
+                generation_stat_id=generation_stat_id,
+                cost_stat_id=None,
+                derived_rate=derived_rate,
+            )
+
         else:
-            # Both statistics exist - reset backfill flag and do incremental update
+            # All statistics exist - reset backfill flag and do incremental update
             self._backfill_initiated = False
             _LOGGER.debug(
                 "Found existing statistics for %s, performing incremental update",
@@ -716,12 +761,16 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
             await self._update_statistics(
                 account_number,
                 consumption_stat_id,
+                generation_stat_id,
                 cost_stat_id,
                 last_stat,
+                last_gen_stat,
                 last_cost_stat,
                 data_date,
                 derived_rate,
             )
+
+
 
     @staticmethod
     def _filter_incomplete_days(
@@ -893,6 +942,7 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
         self,
         account_number: str,
         consumption_stat_id: str | None,
+        generation_stat_id: str | None,
         cost_stat_id: str | None,
         derived_rate: float | None,
     ) -> None:
@@ -901,10 +951,11 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
         Args:
             consumption_stat_id: If provided, backfill consumption statistics.
             cost_stat_id: If provided, backfill cost statistics.
+            generation_stat_id: If provided, backfill generation statistics.
 
         At least one stat ID must be provided.
         """
-        assert consumption_stat_id or cost_stat_id
+        assert consumption_stat_id or cost_stat_id or generation_stat_id
 
         today = dt_util.now().date()
         end_date = today - timedelta(days=1)  # Yesterday
@@ -936,6 +987,7 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
         current_month: tuple[int, int] | None = None  # (year, month)
 
         hourly_consumption: dict[datetime, float] = {}
+        hourly_generation: dict[datetime, float] = {}
         hourly_cost: dict[datetime, float] = {}
         for interval in sorted(intervals, key=lambda i: i.timestamp):
             # Reset cumulative counter at calendar month boundaries
@@ -947,8 +999,10 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
             hour_start = interval.timestamp.replace(minute=0, second=0, microsecond=0)
             if hour_start not in hourly_consumption:
                 hourly_consumption[hour_start] = 0.0
+                hourly_generation[hour_start] = 0.0
                 hourly_cost[hour_start] = 0.0
             hourly_consumption[hour_start] += interval.consumption
+            hourly_generation[hour_start] += interval.generation
             hourly_cost[hour_start] += self._calculate_interval_cost(
                 interval,
                 derived_rate,
@@ -961,12 +1015,15 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
 
         # Deduplicate by UTC to prevent duplicate-key errors in HA recorder
         utc_consumption = self._deduplicate_hourly_by_utc(hourly_consumption)
+        utc_generation = self._deduplicate_hourly_by_utc(hourly_generation)
         utc_cost = self._deduplicate_hourly_by_utc(hourly_cost)
 
         # Build statistics with cumulative sums
         consumption_statistics: list[StatisticData] = []
+        generation_statistics: list[StatisticData] = []
         cost_statistics: list[StatisticData] = []
         consumption_sum = 0.0
+        generation_sum = 0.0
         cost_sum = 0.0
 
         for utc_dt in sorted(utc_consumption.keys()):
@@ -975,6 +1032,13 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
                 consumption_sum += consumption
                 consumption_statistics.append(
                     StatisticData(start=utc_dt, state=consumption, sum=consumption_sum)
+                )
+
+            if generation_stat_id:
+                generation = utc_generation[utc_dt]
+                generation_sum += generation
+                generation_statistics.append(
+                    StatisticData(start=utc_dt, state=generation, sum=generation_sum)
                 )
 
             if cost_stat_id:
@@ -1004,6 +1068,26 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
                 self.hass, consumption_metadata, consumption_statistics
             )
 
+        # Insert generation statistics if requested
+        if generation_stat_id and generation_statistics:
+            generation_metadata = StatisticMetaData(
+                mean_type=StatisticMeanType.NONE,
+                has_sum=True,
+                name=f"Dominion Energy {account_number} excess generation",
+                source=DOMAIN,
+                statistic_id=generation_stat_id,
+                unit_class="energy",
+                unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+            )
+            _LOGGER.info(
+                "Adding %d hourly generation statistics for %s",
+                len(generation_statistics),
+                generation_stat_id,
+            )
+            async_add_external_statistics(
+                self.hass, generation_metadata, generation_statistics
+            )
+
         # Insert cost statistics if requested
         if cost_stat_id and cost_statistics:
             cost_metadata = StatisticMetaData(
@@ -1026,8 +1110,10 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
         self,
         account_number: str,
         consumption_stat_id: str,
+        generation_stat_id: str,
         cost_stat_id: str,
         last_stat: dict,
+        last_gen_stat: dict,
         last_cost_stat: dict,
         data_date: date,
         derived_rate: float | None,

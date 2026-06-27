@@ -153,6 +153,34 @@ VA_NC_SENSORS: tuple[DominionEnergySensorDescription, ...] = (
             "Yes" if data.bill_forecast and data.bill_forecast.is_tou else "No"
         ),
     ),
+        DominionEnergySensorDescription(
+        key="latest_interval_generation",
+        name="Latest interval generation",
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        # Note: Not using device_class=ENERGY because state_class=MEASUREMENT
+        # is incompatible with energy device class (requires total/total_increasing)
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=3,
+        value_fn=lambda data: data.latest_generation,
+    ),
+    DominionEnergySensorDescription(
+        key="daily_generation",
+        name="Yesterday's generation",
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        device_class=SensorDeviceClass.ENERGY,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        suggested_display_precision=2,
+        value_fn=lambda data: data.daily_generation_total,
+    ),
+    DominionEnergySensorDescription(
+        key="monthly_generation",
+        name="Current month generation",
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        device_class=SensorDeviceClass.ENERGY,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        suggested_display_precision=2,
+        value_fn=lambda data: data.monthly_generation_total,
+    ),
 )
 
 # Bill forecast and solar sensors for South Carolina. The SC bill values
@@ -334,6 +362,7 @@ class DominionEnergySensor(CoordinatorEntity[DominionEnergyCoordinator], SensorE
                 "daily_cost",
                 "latest_interval_usage",
                 "daily_generation",
+                "latest_interval_generation",
                 "daily_gas_usage",
             )
             and self.coordinator.data.data_date

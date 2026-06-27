@@ -77,6 +77,9 @@
 | Latest Interval Usage | Most recent 30-minute reading (kWh) | measurement |
 | Yesterday's Usage | Previous day's total consumption (kWh) | total_increasing |
 | Current Month Usage | Month-to-date consumption (kWh) | total_increasing |
+| Latest Interval Generation | Most recent 30-minute generation reading (kWh) | measurement |
+| Yesterday's Generation | Previous day's total generation (kWh) | total_increasing |
+| Current Month Generation | Month-to-date generation (kWh) | total_increasing |
 | Yesterday's Cost | Estimated cost for previous day ($) | total |
 | Current Month Cost | Estimated cost for month-to-date ($) | total |
 | Current Billing Period Usage | Usage in current billing cycle (kWh) | total_increasing |
@@ -116,6 +119,7 @@ This integration provides **external statistics** for the Home Assistant Energy 
 | Statistic ID | Description |
 |--------------|-------------|
 | `dominion_energy:{account}_energy_consumption` | Cumulative energy consumption (kWh) |
+| `dominion_energy:{account}_energy_excess_generation` | Cumulative energy generation (kWh) |
 | `dominion_energy:{account}_energy_cost` | Cumulative energy cost (uses configured cost mode) |
 | `dominion_energy:{account}_energy_generation` | Cumulative solar energy sent to the grid (kWh). South Carolina accounts with solar only. Use it under **Return to grid**. |
 | `dominion_energy:{account}_gas_consumption` | Cumulative gas use (ft³). South Carolina accounts with gas only. Use it under **Gas consumption**. |
