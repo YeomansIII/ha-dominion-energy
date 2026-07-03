@@ -157,6 +157,34 @@ SENSORS: tuple[DominionEnergySensorDescription, ...] = (
             "Yes" if data.bill_forecast and data.bill_forecast.is_tou else "No"
         ),
     ),
+        DominionEnergySensorDescription(
+        key="latest_interval_generation",
+        name="Latest interval generation",
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        # Note: Not using device_class=ENERGY because state_class=MEASUREMENT
+        # is incompatible with energy device class (requires total/total_increasing)
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=3,
+        value_fn=lambda data: data.latest_generation,
+    ),
+    DominionEnergySensorDescription(
+        key="daily_generation",
+        name="Yesterday's generation",
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        device_class=SensorDeviceClass.ENERGY,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        suggested_display_precision=2,
+        value_fn=lambda data: data.daily_generation_total,
+    ),
+    DominionEnergySensorDescription(
+        key="monthly_generation",
+        name="Current month generation",
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        device_class=SensorDeviceClass.ENERGY,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        suggested_display_precision=2,
+        value_fn=lambda data: data.monthly_generation_total,
+    ),
 )
 
 
@@ -233,12 +261,12 @@ class DominionEnergySensor(CoordinatorEntity[DominionEnergyCoordinator], SensorE
         key = self.entity_description.key
 
         # Add data_date for daily and interval sensors
-        if key in ("daily_usage", "daily_cost", "latest_interval_usage"):
+        if key in ("daily_usage", "daily_cost", "latest_interval_usage", "daily_generation", "latest_interval_generation"):
             if self.coordinator.data.data_date:
                 attrs["data_date"] = self.coordinator.data.data_date.isoformat()
 
         # Add date range for monthly sensors
-        if key in ("monthly_usage", "monthly_cost"):
+        if key in ("monthly_usage", "monthly_cost", "monthly_generation"):
             data = self.coordinator.data
             if data.month_start_date:
                 attrs["month_start"] = data.month_start_date.isoformat()
