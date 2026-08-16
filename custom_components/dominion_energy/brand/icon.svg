@@ -1,0 +1,23 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Background: rounded square with Dominion-inspired teal -->
+  <rect width="512" height="512" rx="80" fill="#0077A8"/>
+  
+  <!-- Stylized "D" made of 4 diagonal bands — inspired by but distinct from original -->
+  <!-- Band 1 (top) -->
+  <path d="M120 100 L340 100 C380 100 410 120 430 150 L160 150 Z" fill="white" opacity="0.95"/>
+  
+  <!-- Band 2 -->
+  <path d="M120 185 L440 185 C450 210 455 235 455 260 L120 260 Z" fill="white" opacity="0.85"/>
+  
+  <!-- Band 3 -->
+  <path d="M120 295 L455 295 C450 325 440 350 430 370 L120 370 Z" fill="white" opacity="0.75"/>
+  
+  <!-- Band 4 (bottom) -->
+  <path d="M120 405 L390 405 C360 425 330 435 300 440 L120 440 Z" fill="white" opacity="0.65"/>
+  
+  <!-- Vertical left edge of the D -->
+  <rect x="100" y="90" width="40" height="360" rx="8" fill="white" opacity="0.95"/>
+  
+  <!-- Larger and wider energy accent: lightning bolt -->
+  <path d="M375 450 L420 330 L398 330 L460 200 L400 340 L425 340 L365 470 Z" fill="#FFB81C" opacity="0.9"/>
+</svg>
