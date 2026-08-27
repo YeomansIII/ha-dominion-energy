@@ -2,27 +2,26 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 import logging
+from collections.abc import Mapping
 from typing import Any
 
+import voluptuous as vol
 from dompower import (
+    AccountInfo,
+    ApiError,
+    CannotConnectError,
     DompowerClient,
     GigyaAuthenticator,
-    InvalidCredentialsError,
-    TFAVerificationError,
-    TFAExpiredError,
     GigyaError,
-    CannotConnectError,
-    TokenExpiredError,
     InvalidAuthError,
-    ApiError,
-    TFATarget,
-    AccountInfo,
+    InvalidCredentialsError,
     MeterDevice,
+    TFAExpiredError,
+    TFATarget,
+    TFAVerificationError,
+    TokenExpiredError,
 )
-import voluptuous as vol
-
 from homeassistant.config_entries import (
     SOURCE_RECONFIGURE,
     ConfigEntry,
