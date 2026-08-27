@@ -169,9 +169,8 @@ def calculate_consumption_tax(
         if position >= tier.upper_kwh:
             # Already past this tier
             continue
-        if position < tier.lower_kwh:
-            # Shouldn't happen with contiguous tiers, but handle gracefully
-            position = tier.lower_kwh
+        # Shouldn't happen with contiguous tiers, but handle gracefully
+        position = max(position, tier.lower_kwh)
 
         # How much of the remaining interval falls in this tier
         room_in_tier = tier.upper_kwh - position
