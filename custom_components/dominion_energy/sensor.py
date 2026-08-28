@@ -130,6 +130,24 @@ SENSORS: tuple[DominionEnergySensorDescription, ...] = (
             data.bill_forecast.derived_rate if data.bill_forecast else None
         ),
     ),
+    DominionEnergySensorDescription(
+        key="current_period_estimated_cost",
+        name="Current billing period estimated cost",
+        native_unit_of_measurement="USD",
+        device_class=SensorDeviceClass.MONETARY,
+        state_class=SensorStateClass.TOTAL,
+        suggested_display_precision=2,
+        value_fn=lambda data: (
+            round(
+                data.bill_forecast.current_usage_kwh * data.bill_forecast.derived_rate,
+                2,
+            )
+            if data.bill_forecast
+            and data.bill_forecast.current_usage_kwh is not None
+            and data.bill_forecast.derived_rate is not None
+            else None
+        ),
+    ),
     # New bill forecast sensors - Diagnostic
     DominionEnergySensorDescription(
         key="billing_period_start",
