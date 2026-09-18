@@ -9,7 +9,13 @@ dependencies = []
 dev = [
     "pytest>=8.3.0",
 ]
+# Home Assistant tests in tests/ha. Use a Python version that Home Assistant
+# supports.
+ha-test = [
+    "pytest-homeassistant-custom-component>=0.13.0",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+asyncio_mode = "auto"
