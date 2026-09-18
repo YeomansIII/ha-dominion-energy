@@ -14,12 +14,23 @@
       "tfa_failed": "Verification code is incorrect",
       "tfa_expired": "Verification session expired, please try again",
       "unknown": "An unexpected error occurred",
-      "no_meters_found": "No active AMI meters found for this account"
+      "no_meters_found": "No active AMI meters found for this account",
+      "multiple_accounts": "This South Carolina login has more than one account. Multiple SC accounts are not supported yet."
     },
     "step": {
       "user": {
         "title": "Connect to Dominion Energy",
-        "description": "Enter your Dominion Energy account credentials.",
+        "description": "Select the state where you get service from Dominion Energy.",
+        "data": {
+          "region": "Service area"
+        },
+        "data_description": {
+          "region": "South Carolina accounts use a different Dominion Energy website (dominionenergysc.com)"
+        }
+      },
+      "credentials": {
+        "title": "Connect to Dominion Energy",
+        "description": "Enter your Dominion Energy (Virginia or North Carolina) account credentials.",
         "data": {
           "username": "Email Address",
           "password": "Password"
@@ -27,6 +38,18 @@
         "data_description": {
           "username": "The email address for your Dominion Energy account",
           "password": "Your Dominion Energy account password"
+        }
+      },
+      "sc_credentials": {
+        "title": "Connect to Dominion Energy South Carolina",
+        "description": "Enter the credentials that you use at account.dominionenergysc.com.",
+        "data": {
+          "username": "Username",
+          "password": "Password"
+        },
+        "data_description": {
+          "username": "The username for your Dominion Energy South Carolina account",
+          "password": "Your Dominion Energy South Carolina account password"
         }
       },
       "tfa_select": {
@@ -175,6 +198,30 @@
       },
       "is_time_of_use": {
         "name": "Time-of-use plan"
+      },
+      "bill_cost_to_date": {
+        "name": "Bill cost to date"
+      },
+      "forecasted_bill": {
+        "name": "Forecasted bill"
+      },
+      "last_year_bill": {
+        "name": "Same period last year"
+      },
+      "bill_data_through": {
+        "name": "Bill data through"
+      },
+      "daily_generation": {
+        "name": "Yesterday's generation"
+      },
+      "monthly_generation": {
+        "name": "Current month generation"
+      },
+      "daily_gas_usage": {
+        "name": "Yesterday's gas usage"
+      },
+      "monthly_gas_usage": {
+        "name": "Current month gas usage"
       }
     }
   }
