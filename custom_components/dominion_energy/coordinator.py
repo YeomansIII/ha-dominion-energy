@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 
@@ -10,14 +11,18 @@ from dompower import (
     ApiError,
     BillForecast,
     CannotConnectError,
+    DominionSCClient,
     DompowerClient,
     GigyaAuthenticator,
     GigyaError,
     IntervalUsageData,
     InvalidAuthError,
     InvalidCredentialsError,
+    MeterType,
+    SCBillForecast,
     TFARequiredError,
     TokenExpiredError,
+    create_sc_cookie_jar,
 )
 from homeassistant.components.recorder import get_instance
 from homeassistant.components.recorder.models import (
@@ -30,10 +35,13 @@ from homeassistant.components.recorder.statistics import (
     get_last_statistics,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import UnitOfEnergy
+from homeassistant.const import UnitOfEnergy, UnitOfVolume
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
-from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.aiohttp_client import (
+    async_create_clientsession,
+    async_get_clientsession,
+)
 from homeassistant.helpers.update_coordinator import (
     DataUpdateCoordinator,
     UpdateFailed,
@@ -48,12 +56,15 @@ from .const import (
     CONF_COST_MODE,
     CONF_FIXED_RATE,
     CONF_METER_NUMBER,
+    CONF_METER_TYPES,
     CONF_OFF_PEAK_RATE,
     CONF_PASSWORD,
     CONF_PEAK_END_HOUR,
     CONF_PEAK_RATE,
     CONF_PEAK_START_HOUR,
     CONF_REFRESH_TOKEN,
+    CONF_SERVICE_ADDRESS,
+    CONF_TFA_TOKEN,
     CONF_USERNAME,
     COST_MODE_API,
     COST_MODE_SCHEDULE_1,
@@ -64,9 +75,11 @@ from .const import (
     DEFAULT_PEAK_RATE,
     DEFAULT_PEAK_START_HOUR,
     DOMAIN,
+    SC_UPDATE_INTERVAL_MINUTES,
     UPDATE_INTERVAL_MINUTES,
 )
 from .rates import VA_SCHEDULE_1, calculate_schedule1_interval_cost
+from .region import is_sc, sc_derived_rate
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -88,11 +101,37 @@ class DominionEnergyData:
     data_date: date | None  # Which day the daily data represents (yesterday)
     month_start_date: date | None  # Start of the month range
     month_end_date: date | None  # End of month range (last complete day)
+    # $/kWh used by the API estimate cost mode, if known
+    derived_rate: float | None = None
+    # South Carolina only
+    sc_forecast: SCBillForecast | None = None
+    daily_generation: float = 0.0
+    monthly_generation: float = 0.0
+    daily_gas: float | None = None  # ft³
+    monthly_gas: float | None = None  # ft³
 
     @property
     def latest_usage(self) -> float | None:
         """Get the latest interval usage value."""
         return self.latest_interval.consumption if self.latest_interval else None
+
+    @property
+    def billing_period_start(self) -> date | None:
+        """Return the start of the current billing period, for any region."""
+        if self.bill_forecast:
+            return self.bill_forecast.current_period_start
+        if self.sc_forecast:
+            return self.sc_forecast.period_start
+        return None
+
+    @property
+    def billing_period_end(self) -> date | None:
+        """Return the end of the current billing period, for any region."""
+        if self.bill_forecast:
+            return self.bill_forecast.current_period_end
+        if self.sc_forecast:
+            return self.sc_forecast.period_end
+        return None
 
 
 class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
@@ -106,17 +145,42 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
         config_entry: DominionEnergyConfigEntry,
     ) -> None:
         """Initialize the coordinator."""
+        self._is_sc = is_sc(config_entry.data)
         super().__init__(
             hass,
             _LOGGER,
             config_entry=config_entry,
             name=DOMAIN,
-            update_interval=timedelta(minutes=UPDATE_INTERVAL_MINUTES),
+            update_interval=timedelta(
+                minutes=SC_UPDATE_INTERVAL_MINUTES
+                if self._is_sc
+                else UPDATE_INTERVAL_MINUTES
+            ),
         )
         self._client: DompowerClient | None = None
+        self._sc_client: DominionSCClient | None = None
         # Track if backfill has been initiated to prevent race condition
         # where recorder hasn't committed stats yet and backfill runs again
         self._backfill_initiated: bool = False
+        # Same, for the SC generation and gas statistics
+        self._extra_backfill_initiated: set[str] = set()
+        # Label used in statistic names
+        self._stat_label: str = (
+            config_entry.data.get(CONF_SERVICE_ADDRESS)
+            or config_entry.data[CONF_ACCOUNT_NUMBER]
+            if self._is_sc
+            else config_entry.data[CONF_ACCOUNT_NUMBER]
+        )
+
+    @property
+    def is_sc(self) -> bool:
+        """Return True if this entry is a South Carolina account."""
+        return self._is_sc
+
+    @property
+    def has_gas(self) -> bool:
+        """Return True if this SC account has a gas meter."""
+        return MeterType.GAS.value in self.config_entry.data.get(CONF_METER_TYPES, [])
 
     def _token_update_callback(self, access_token: str, refresh_token: str) -> None:
         """Handle token updates from the client."""
@@ -130,6 +194,19 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
 
     async def _async_setup(self) -> None:
         """Set up the coordinator (called once on first refresh)."""
+        if self._is_sc:
+            # The SC portal uses session cookies. Use a dedicated session so
+            # that the cookies are not shared with other integrations.
+            self._sc_client = DominionSCClient(
+                async_create_clientsession(
+                    self.hass, cookie_jar=create_sc_cookie_jar()
+                ),
+                self.config_entry.data[CONF_USERNAME],
+                self.config_entry.data[CONF_PASSWORD],
+                tfa_token=self.config_entry.data.get(CONF_TFA_TOKEN),
+            )
+            return
+
         session = async_get_clientsession(self.hass)
         self._client = DompowerClient(
             session,
@@ -203,19 +280,35 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
             _LOGGER.warning("Auto-reauth failed unexpectedly: %s", err)
             return False
 
+    async def _async_get_intervals(
+        self,
+        start_date: date,
+        end_date: date,
+        meter_type: MeterType = MeterType.ELECTRIC,
+    ) -> list[IntervalUsageData]:
+        """Fetch interval usage from the backend for this entry's region."""
+        if self._sc_client is not None:
+            return await self._sc_client.async_get_interval_usage(
+                start_date, end_date, meter_type
+            )
+        assert self._client is not None
+        return await self._client.async_get_interval_usage(
+            account_number=self.config_entry.data[CONF_ACCOUNT_NUMBER],
+            meter_number=self.config_entry.data[CONF_METER_NUMBER],
+            start_date=start_date,
+            end_date=end_date,
+        )
+
     async def _async_update_data(self) -> DominionEnergyData:
         """Fetch data from the API.
 
         Note: The Dominion Energy API only provides data for completed days,
         so we always fetch yesterday's data (the most recent complete day).
         """
-        if self._client is None:
+        if self._client is None and self._sc_client is None:
             await self._async_setup()
 
-        assert self._client is not None
-
         account_number = self.config_entry.data[CONF_ACCOUNT_NUMBER]
-        meter_number = self.config_entry.data[CONF_METER_NUMBER]
 
         today = dt_util.now().date()
         yesterday = today - timedelta(days=1)
@@ -229,24 +322,21 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
             month_start = today.replace(day=1)
 
         try:
+            if self._sc_client is not None:
+                # The SC portal session expires after some minutes. Log in
+                # again with the saved TFA token at the start of each update.
+                await self._sc_client.async_login()
+
             # Fetch interval data for yesterday (last complete day)
-            intervals = await self._client.async_get_interval_usage(
-                account_number=account_number,
-                meter_number=meter_number,
-                start_date=yesterday,
-                end_date=yesterday,
-            )
+            intervals = await self._async_get_intervals(yesterday, yesterday)
 
             # Calculate daily total from intervals
             daily_total = sum(i.consumption for i in intervals)
 
             # For monthly, fetch from start of month to yesterday
             if month_start < yesterday:
-                monthly_intervals = await self._client.async_get_interval_usage(
-                    account_number=account_number,
-                    meter_number=meter_number,
-                    start_date=month_start,
-                    end_date=yesterday,
+                monthly_intervals = await self._async_get_intervals(
+                    month_start, yesterday
                 )
                 monthly_total = sum(i.consumption for i in monthly_intervals)
             else:
@@ -255,26 +345,30 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
                 monthly_total = daily_total
 
             # Fetch bill forecast for cost calculation
-            try:
-                bill_forecast = await self._client.async_get_bill_forecast(
-                    account_number=account_number,
-                )
-            except ApiError as err:
-                _LOGGER.warning("Could not fetch bill forecast: %s", err)
-                bill_forecast = None
+            bill_forecast: BillForecast | None = None
+            sc_forecast: SCBillForecast | None = None
+            if self._sc_client is not None:
+                sc_forecast, derived_rate = await self._async_sc_bill_data()
+            else:
+                assert self._client is not None
+                try:
+                    bill_forecast = await self._client.async_get_bill_forecast(
+                        account_number=account_number,
+                    )
+                except ApiError as err:
+                    _LOGGER.warning("Could not fetch bill forecast: %s", err)
+                derived_rate = bill_forecast.derived_rate if bill_forecast else None
 
             # Calculate costs
-            daily_cost = self._calculate_cost(intervals, bill_forecast)
-            monthly_cost = self._calculate_cost(monthly_intervals, bill_forecast)
+            daily_cost = self._calculate_cost(intervals, derived_rate)
+            monthly_cost = self._calculate_cost(monthly_intervals, derived_rate)
 
             latest = intervals[-1] if intervals else None
 
             # Insert/update external statistics for Energy Dashboard
-            await self._insert_statistics(
-                account_number, meter_number, yesterday, bill_forecast
-            )
+            await self._insert_statistics(account_number, yesterday, derived_rate)
 
-            return DominionEnergyData(
+            data = DominionEnergyData(
                 intervals=intervals,
                 latest_interval=latest,
                 daily_total=daily_total,
@@ -285,7 +379,16 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
                 data_date=yesterday,
                 month_start_date=month_start,
                 month_end_date=yesterday,
+                derived_rate=derived_rate,
+                sc_forecast=sc_forecast,
             )
+
+            if self._sc_client is not None:
+                await self._async_update_sc_extras(
+                    data, monthly_intervals, month_start, yesterday
+                )
+
+            return data
 
         except TokenExpiredError as err:
             _LOGGER.info("Refresh token expired, attempting auto-reauth")
@@ -295,7 +398,8 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
             raise ConfigEntryAuthFailed(
                 "Authentication failed - please re-authenticate"
             ) from err
-        except InvalidAuthError as err:
+        except (InvalidAuthError, InvalidCredentialsError, TFARequiredError) as err:
+            # SC: the saved TFA token was not accepted, or the password changed
             raise ConfigEntryAuthFailed(
                 "Authentication failed - please re-authenticate"
             ) from err
@@ -308,10 +412,105 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
                 ) from err
             raise UpdateFailed(f"API error: {err}") from err
 
+    async def _async_sc_bill_data(
+        self,
+    ) -> tuple[SCBillForecast | None, float | None]:
+        """Fetch the SC bill forecast and derive a $/kWh rate if possible.
+
+        The rate is only needed for the API estimate cost mode. The SC cost
+        to date includes gas, so accounts with gas get no derived rate.
+        """
+        assert self._sc_client is not None
+        try:
+            forecast = await self._sc_client.async_get_bill_forecast()
+        except ApiError as err:
+            _LOGGER.warning("Could not fetch SC bill forecast: %s", err)
+            return None, None
+
+        cost_mode = self.config_entry.options.get(CONF_COST_MODE, COST_MODE_API)
+        if (
+            cost_mode != COST_MODE_API
+            or self.has_gas
+            or forecast.data_through < forecast.period_start
+        ):
+            return forecast, None
+
+        try:
+            period_intervals = await self._async_get_intervals(
+                forecast.period_start, forecast.data_through
+            )
+        except ApiError as err:
+            _LOGGER.warning("Could not fetch SC billing period usage: %s", err)
+            return forecast, None
+
+        rate = sc_derived_rate(
+            forecast.cost_to_date,
+            sum(i.consumption for i in period_intervals),
+            has_gas=self.has_gas,
+        )
+        return forecast, rate
+
+    async def _async_update_sc_extras(
+        self,
+        data: DominionEnergyData,
+        monthly_intervals: list[IntervalUsageData],
+        month_start: date,
+        yesterday: date,
+    ) -> None:
+        """Add SC solar generation and gas data, and update their statistics."""
+        account_number = self.config_entry.data[CONF_ACCOUNT_NUMBER]
+
+        data.daily_generation = sum(
+            i.generation for i in monthly_intervals if i.timestamp.date() == yesterday
+        )
+        data.monthly_generation = sum(i.generation for i in monthly_intervals)
+
+        # Only accounts with solar export get a generation statistic. When the
+        # month has no generation, the update waits. The next update with
+        # generation fills the gap from the last statistic.
+        if data.monthly_generation > 0:
+            await self._async_update_sum_statistic(
+                stat_id=f"{DOMAIN}:{account_number}_energy_generation",
+                name=f"Dominion Energy {self._stat_label} generation",
+                unit=UnitOfEnergy.KILO_WATT_HOUR,
+                unit_class="energy",
+                data_date=yesterday,
+                meter_type=MeterType.ELECTRIC,
+                value_fn=lambda i: i.generation,
+                filter_incomplete=True,
+            )
+
+        if not self.has_gas:
+            return
+
+        try:
+            gas_intervals = await self._async_get_intervals(
+                month_start, yesterday, MeterType.GAS
+            )
+        except ApiError as err:
+            _LOGGER.warning("Could not fetch gas usage: %s", err)
+            return
+        data.daily_gas = sum(
+            i.consumption for i in gas_intervals if i.timestamp.date() == yesterday
+        )
+        data.monthly_gas = sum(i.consumption for i in gas_intervals)
+
+        # Summer days can have no gas use at all, so zero days are kept.
+        await self._async_update_sum_statistic(
+            stat_id=f"{DOMAIN}:{account_number}_gas_consumption",
+            name=f"Dominion Energy {self._stat_label} gas",
+            unit=UnitOfVolume.CUBIC_FEET,
+            unit_class="volume",
+            data_date=yesterday,
+            meter_type=MeterType.GAS,
+            value_fn=lambda i: i.consumption,
+            filter_incomplete=False,
+        )
+
     def _calculate_cost(
         self,
         intervals: list[IntervalUsageData],
-        bill_forecast: BillForecast | None,
+        derived_rate: float | None,
     ) -> float:
         """Calculate cost based on configured mode."""
         if not intervals:
@@ -342,11 +541,10 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
                 cumulative_kwh += interval.consumption
             return round(cost, 2)
 
-        if cost_mode == COST_MODE_API and bill_forecast:
-            # Derive rate from last bill: charges / usage
-            rate = bill_forecast.derived_rate
-            if rate:
-                return round(total_kwh * rate, 2)
+        if cost_mode == COST_MODE_API:
+            # Rate derived from the bill (VA/NC: last bill charges / usage)
+            if derived_rate:
+                return round(total_kwh * derived_rate, 2)
             # Fallback to fixed if no derived rate available
             return round(
                 total_kwh * options.get(CONF_FIXED_RATE, DEFAULT_FIXED_RATE), 2
@@ -376,7 +574,7 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
     def _calculate_interval_cost(
         self,
         interval: IntervalUsageData,
-        bill_forecast: BillForecast | None,
+        derived_rate: float | None,
         cumulative_kwh_before: float = 0.0,
         billing_period_days: int = 30,
     ) -> float:
@@ -386,7 +584,7 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
 
         Args:
             interval: The interval usage data.
-            bill_forecast: Bill forecast for API estimate mode.
+            derived_rate: $/kWh rate for API estimate mode, if known.
             cumulative_kwh_before: Cumulative kWh before this interval in the
                 billing period. Used by Schedule 1 for tiered pricing.
             billing_period_days: Days in billing period. Used by Schedule 1
@@ -404,10 +602,9 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
                 billing_period_days=billing_period_days,
             )
 
-        if cost_mode == COST_MODE_API and bill_forecast:
-            rate = bill_forecast.derived_rate
-            if rate:
-                return interval.consumption * rate
+        if cost_mode == COST_MODE_API:
+            if derived_rate:
+                return interval.consumption * derived_rate
             # Fallback to fixed if no derived rate available
             return interval.consumption * options.get(
                 CONF_FIXED_RATE, DEFAULT_FIXED_RATE
@@ -432,9 +629,8 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
     async def _insert_statistics(
         self,
         account_number: str,
-        meter_number: str,
         data_date: date,
-        bill_forecast: BillForecast | None,
+        derived_rate: float | None,
     ) -> None:
         """Insert or update external statistics for Energy Dashboard integration.
 
@@ -485,10 +681,9 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
             self._backfill_initiated = True
             await self._backfill_statistics(
                 account_number,
-                meter_number,
                 consumption_stat_id=consumption_stat_id,
                 cost_stat_id=cost_stat_id,
-                bill_forecast=bill_forecast,
+                derived_rate=derived_rate,
             )
         elif not cost_exists:
             # Consumption exists but cost doesn't - backfill cost only (upgrade path)
@@ -507,10 +702,9 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
             self._backfill_initiated = True
             await self._backfill_statistics(
                 account_number,
-                meter_number,
                 consumption_stat_id=None,  # Don't backfill consumption
                 cost_stat_id=cost_stat_id,
-                bill_forecast=bill_forecast,
+                derived_rate=derived_rate,
             )
         else:
             # Both statistics exist - reset backfill flag and do incremental update
@@ -521,13 +715,12 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
             )
             await self._update_statistics(
                 account_number,
-                meter_number,
                 consumption_stat_id,
                 cost_stat_id,
                 last_stat,
                 last_cost_stat,
                 data_date,
-                bill_forecast,
+                derived_rate,
             )
 
     @staticmethod
@@ -699,10 +892,9 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
     async def _backfill_statistics(
         self,
         account_number: str,
-        meter_number: str,
         consumption_stat_id: str | None,
         cost_stat_id: str | None,
-        bill_forecast: BillForecast | None,
+        derived_rate: float | None,
     ) -> None:
         """Backfill historical statistics for initial setup or upgrade.
 
@@ -712,7 +904,6 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
 
         At least one stat ID must be provided.
         """
-        assert self._client is not None
         assert consumption_stat_id or cost_stat_id
 
         today = dt_util.now().date()
@@ -722,12 +913,7 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
         _LOGGER.debug("Backfilling statistics from %s to %s", start_date, end_date)
 
         try:
-            intervals = await self._client.async_get_interval_usage(
-                account_number=account_number,
-                meter_number=meter_number,
-                start_date=start_date,
-                end_date=end_date,
-            )
+            intervals = await self._async_get_intervals(start_date, end_date)
         except ApiError as err:
             _LOGGER.warning("Could not fetch backfill data: %s", err)
             return
@@ -765,7 +951,7 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
             hourly_consumption[hour_start] += interval.consumption
             hourly_cost[hour_start] += self._calculate_interval_cost(
                 interval,
-                bill_forecast,
+                derived_rate,
                 cumulative_kwh_before=cumulative_kwh,
                 billing_period_days=30,
             )
@@ -803,7 +989,7 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
             consumption_metadata = StatisticMetaData(
                 mean_type=StatisticMeanType.NONE,
                 has_sum=True,
-                name=f"Dominion Energy {account_number} consumption",
+                name=f"Dominion Energy {self._stat_label} consumption",
                 source=DOMAIN,
                 statistic_id=consumption_stat_id,
                 unit_class="energy",
@@ -823,7 +1009,7 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
             cost_metadata = StatisticMetaData(
                 mean_type=StatisticMeanType.NONE,
                 has_sum=True,
-                name=f"Dominion Energy {account_number} cost",
+                name=f"Dominion Energy {self._stat_label} cost",
                 source=DOMAIN,
                 statistic_id=cost_stat_id,
                 unit_class=None,
@@ -839,16 +1025,14 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
     async def _update_statistics(
         self,
         account_number: str,
-        meter_number: str,
         consumption_stat_id: str,
         cost_stat_id: str,
         last_stat: dict,
         last_cost_stat: dict,
         data_date: date,
-        bill_forecast: BillForecast | None,
+        derived_rate: float | None,
     ) -> None:
         """Update statistics with new data since last recorded statistic."""
-        assert self._client is not None
 
         try:
             # Get the last recorded statistic time and sum for consumption
@@ -1013,12 +1197,7 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
         )
 
         try:
-            intervals = await self._client.async_get_interval_usage(
-                account_number=account_number,
-                meter_number=meter_number,
-                start_date=start_date,
-                end_date=data_date,
-            )
+            intervals = await self._async_get_intervals(start_date, data_date)
         except ApiError as err:
             _LOGGER.warning("Could not fetch statistics update data: %s", err)
             return
@@ -1063,7 +1242,7 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
             hourly_consumption[hour_start] += interval.consumption
             hourly_cost[hour_start] += self._calculate_interval_cost(
                 interval,
-                bill_forecast,
+                derived_rate,
                 cumulative_kwh_before=cumulative_kwh,
                 billing_period_days=30,
             )
@@ -1098,7 +1277,7 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
         consumption_metadata = StatisticMetaData(
             mean_type=StatisticMeanType.NONE,
             has_sum=True,
-            name=f"Dominion Energy {account_number} consumption",
+            name=f"Dominion Energy {self._stat_label} consumption",
             source=DOMAIN,
             statistic_id=consumption_stat_id,
             unit_class="energy",
@@ -1109,7 +1288,7 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
         cost_metadata = StatisticMetaData(
             mean_type=StatisticMeanType.NONE,
             has_sum=True,
-            name=f"Dominion Energy {account_number} cost",
+            name=f"Dominion Energy {self._stat_label} cost",
             source=DOMAIN,
             statistic_id=cost_stat_id,
             unit_class=None,
@@ -1128,3 +1307,108 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
             self.hass, consumption_metadata, consumption_statistics
         )
         async_add_external_statistics(self.hass, cost_metadata, cost_statistics)
+
+    async def _async_update_sum_statistic(
+        self,
+        *,
+        stat_id: str,
+        name: str,
+        unit: str,
+        unit_class: str,
+        data_date: date,
+        meter_type: MeterType,
+        value_fn: Callable[[IntervalUsageData], float],
+        filter_incomplete: bool,
+    ) -> None:
+        """Backfill or extend one hourly sum statistic (SC generation and gas).
+
+        On the first run, this backfills BACKFILL_DAYS days. Later runs fetch
+        from the day after the last statistic. If the last day is not complete
+        (last local hour < 22), that day is fetched again and replaced.
+        """
+        local_tz = dt_util.get_default_time_zone()
+        oldest_available = dt_util.now().date() - timedelta(days=BACKFILL_DAYS)
+
+        last_stat = await get_instance(self.hass).async_add_executor_job(
+            get_last_statistics, self.hass, 1, stat_id, True, {"sum"}
+        )
+        is_backfill = not last_stat.get(stat_id)
+        if is_backfill:
+            if stat_id in self._extra_backfill_initiated:
+                _LOGGER.debug("Backfill for %s waits for the recorder", stat_id)
+                return
+            start_date = oldest_available
+            running_sum = 0.0
+        else:
+            self._extra_backfill_initiated.discard(stat_id)
+            row = last_stat[stat_id][0]
+            row_start = row["start"]
+            last_dt = (
+                datetime.fromtimestamp(row_start, tz=dt_util.UTC)
+                if isinstance(row_start, (int, float))
+                else row_start
+            )
+            last_local = last_dt.astimezone(local_tz)
+            running_sum = float(row.get("sum") or 0)
+
+            if last_local.hour >= 22:
+                start_date = last_local.date() + timedelta(days=1)
+            else:
+                # Incomplete day: fetch it again and replace its statistics
+                start_date = last_local.date()
+                day_start_utc = dt_util.as_utc(
+                    last_local.replace(hour=0, minute=0, second=0, microsecond=0)
+                )
+                sum_before = await self._get_sum_before(stat_id, day_start_utc)
+                running_sum = sum_before if sum_before is not None else 0.0
+            start_date = max(start_date, oldest_available)
+
+        if start_date > data_date:
+            _LOGGER.debug("Statistics for %s are up to date", stat_id)
+            return
+
+        try:
+            intervals = await self._async_get_intervals(
+                start_date, data_date, meter_type
+            )
+        except ApiError as err:
+            _LOGGER.warning("Could not fetch data for %s: %s", stat_id, err)
+            return
+
+        if filter_incomplete:
+            intervals = self._filter_incomplete_days(intervals)
+        if not intervals:
+            _LOGGER.debug("No new data for %s", stat_id)
+            return
+
+        hourly: dict[datetime, float] = {}
+        for interval in intervals:
+            hour_start = interval.timestamp.replace(minute=0, second=0, microsecond=0)
+            hourly[hour_start] = hourly.get(hour_start, 0.0) + value_fn(interval)
+        utc_hourly = self._deduplicate_hourly_by_utc(hourly)
+
+        statistics: list[StatisticData] = []
+        for utc_dt in sorted(utc_hourly):
+            running_sum += utc_hourly[utc_dt]
+            statistics.append(
+                StatisticData(start=utc_dt, state=utc_hourly[utc_dt], sum=running_sum)
+            )
+
+        metadata = StatisticMetaData(
+            mean_type=StatisticMeanType.NONE,
+            has_sum=True,
+            name=name,
+            source=DOMAIN,
+            statistic_id=stat_id,
+            unit_class=unit_class,
+            unit_of_measurement=unit,
+        )
+        if is_backfill:
+            self._extra_backfill_initiated.add(stat_id)
+        _LOGGER.info(
+            "Adding %d hourly statistics for %s (sum=%.3f)",
+            len(statistics),
+            stat_id,
+            running_sum,
+        )
+        async_add_external_statistics(self.hass, metadata, statistics)
