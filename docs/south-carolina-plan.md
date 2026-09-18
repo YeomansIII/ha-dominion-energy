@@ -39,6 +39,7 @@ Both are forks of `sctigercat1/ha-dominion-sc` and `sctigercat1/dominion-sc-powe
 - [x] Add a `dompower sc-login` and `dompower sc-usage` CLI command for testers.
 - [x] Add unit tests (parser, auth flow, client) with `aresponses`. (21 tests)
 - [x] Add the Apache-2.0 attribution in `NOTICE`.
+- [x] Add `dompower sc-report`, a redacted diagnostic report for testers. (5 tests)
 - [ ] Push the `feat/south-carolina` branch and open a PR. (Owner action.)
 - [ ] Release `dompower` 0.3.0 to PyPI. See `RELEASING.md`. (Owner action.)
 
@@ -177,17 +178,36 @@ After the dompower branch is pushed, an SC user can run:
 uvx --from git+https://github.com/YeomansIII/dompower@feat/south-carolina \
   dompower sc-login --username you@example.com
 uvx --from git+https://github.com/YeomansIII/dompower@feat/south-carolina \
-  dompower sc-usage --days 3
-uvx --from git+https://github.com/YeomansIII/dompower@feat/south-carolina \
-  dompower sc-usage --days 3 --gas
+  dompower sc-report
 ```
+
+`sc-report` writes `dompower-sc-report.txt` with the secrets removed. The
+tester reads it and then attaches it to the issue. It has the data for all of
+the checks below. If the login fails, the report still shows the failed step
+and the responses before it.
+
+The report does not contain the username, password, TFA token, cookies, email
+address, phone number, service address, account number, or Bidgely user ID.
+Values show only from allowlists (JSON field names, `status`,
+`measurementType`, booleans, dates, readings, and numeric ReadingType codes).
+Then the known secrets, email addresses, and phone numbers are replaced.
 
 Ask the tester to check and report:
 
 1. `sc-login` completes TFA and a second `sc-login` does not ask for a code.
-2. The register list: how many registers, the interval length, and if one has
-   only negative values (solar export).
-3. The first and last timestamps. The first should be 00:00 on the first day,
-   in local time.
-4. The daily totals compared with the usage graph on the SC website.
-5. The bill forecast compared with the SC website.
+2. Report section 1: the saved TFA token is accepted.
+3. Report sections 3 and 4: how many registers, the interval length, and if one
+   has only negative values (solar export).
+4. The first reading of each day is at 00:00. The raw readings show the
+   "wall-time" and "real-epoch" meanings of each epoch. The wall-time meaning
+   should agree with the website.
+5. The daily and hourly totals compared with the usage graph on the SC website.
+6. The bill forecast compared with the SC website.
+
+What to look for in a report:
+
+- `Authenticate` `status` values other than `twoFA` or `failed`.
+- `ReadingType` codes: `uom` (72 = Wh), `powerOfTenMultiplier`, `intervalLength`,
+  and `flowDirection` for each register.
+- `LocalTimeParameters` (`tzOffset`, `dstOffset`) to confirm the local-time epochs.
+- Element names that the parser does not read (for example `ReadingQuality`).

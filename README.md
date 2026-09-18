@@ -172,6 +172,15 @@ Dominion Energy South Carolina uses a different website (`account.dominionenergy
 - The **API Estimate** cost mode derives a rate from your current bill only for electric-only accounts. The SC bill includes gas, so gas accounts use the fixed rate. The **Schedule 1** mode is not available, because it is a Virginia tariff.
 - Gas has usage statistics but no cost statistics.
 
+To report a problem, you can attach a diagnostic report to the issue. On a computer with [uv](https://docs.astral.sh/uv/), run:
+
+```bash
+uvx dompower sc-login --username you@example.com
+uvx dompower sc-report
+```
+
+This writes `dompower-sc-report.txt`. The file does not contain your username, password, TFA token, email address, phone number, address, or account number. It does contain your meter readings and bill amounts. Read the file before you attach it.
+
 ## API Constants
 
 The Dominion Energy API uses SAP Customer Data Cloud (Gigya) for authentication. The following API key is the default for all users:
