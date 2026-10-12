@@ -1,0 +1,229 @@
+{
+  "config": {
+    "abort": {
+      "already_configured": "This account is already configured",
+      "reauth_successful": "Re-authentication successful",
+      "reconfigure_successful": "Re-authentication successful",
+      "unique_id_mismatch": "The selected account does not match the original configuration",
+      "wrong_account": "You signed in to a different account. Sign in to the account of this entry.",
+      "unknown": "An unexpected error occurred"
+    },
+    "error": {
+      "cannot_connect": "Cannot connect to Dominion Energy",
+      "invalid_auth": "Authentication failed",
+      "invalid_credentials": "Invalid email or password",
+      "tfa_failed": "Verification code is incorrect",
+      "tfa_expired": "Verification session expired, please try again",
+      "unknown": "An unexpected error occurred",
+      "no_meters_found": "No active AMI meters found for this account",
+      "multiple_accounts": "This South Carolina login has more than one account. Multiple SC accounts are not supported yet."
+    },
+    "step": {
+      "user": {
+        "title": "Connect to Dominion Energy",
+        "description": "Select the state where you get service from Dominion Energy.",
+        "data": {
+          "region": "Service area"
+        },
+        "data_description": {
+          "region": "South Carolina accounts use a different Dominion Energy website (dominionenergysc.com)"
+        }
+      },
+      "credentials": {
+        "title": "Connect to Dominion Energy",
+        "description": "Enter your Dominion Energy (Virginia or North Carolina) account credentials.",
+        "data": {
+          "username": "Email Address",
+          "password": "Password"
+        },
+        "data_description": {
+          "username": "The email address for your Dominion Energy account",
+          "password": "Your Dominion Energy account password"
+        }
+      },
+      "sc_credentials": {
+        "title": "Connect to Dominion Energy South Carolina",
+        "description": "Enter the credentials that you use at account.dominionenergysc.com.",
+        "data": {
+          "username": "Username",
+          "password": "Password"
+        },
+        "data_description": {
+          "username": "The username for your Dominion Energy South Carolina account",
+          "password": "Your Dominion Energy South Carolina account password"
+        }
+      },
+      "tfa_select": {
+        "title": "Two-Factor Authentication",
+        "description": "Select where to receive your verification code.",
+        "data": {
+          "tfa_target": "Send code to"
+        },
+        "data_description": {
+          "tfa_target": "Choose your phone or email to receive the verification code"
+        }
+      },
+      "tfa_code": {
+        "title": "Enter Verification Code",
+        "description": "Enter the verification code sent to {target}.",
+        "data": {
+          "code": "Verification Code"
+        },
+        "data_description": {
+          "code": "The 6-digit code sent to your phone or email"
+        }
+      },
+      "select_meter": {
+        "title": "Select Meter",
+        "description": "Multiple accounts or meters were found. Select the one to monitor.",
+        "data": {
+          "meter_selection": "Account and Meter"
+        },
+        "data_description": {
+          "meter_selection": "Select the service location and meter to monitor"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Re-authenticate {name}",
+        "description": "Your session has expired. Please sign in again.",
+        "data": {
+          "username": "Email Address",
+          "password": "Password"
+        },
+        "data_description": {
+          "username": "The email address for your Dominion Energy account",
+          "password": "Your Dominion Energy account password"
+        }
+      },
+      "reauth_tfa_select": {
+        "title": "Two-Factor Authentication",
+        "description": "Select where to receive your verification code.",
+        "data": {
+          "tfa_target": "Send code to"
+        },
+        "data_description": {
+          "tfa_target": "Choose your phone or email to receive the verification code"
+        }
+      },
+      "reauth_tfa_code": {
+        "title": "Enter Verification Code",
+        "description": "Enter the verification code sent to {target}.",
+        "data": {
+          "code": "Verification Code"
+        },
+        "data_description": {
+          "code": "The 6-digit code sent to your phone or email"
+        }
+      }
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Cost Calculation Settings",
+        "description": "Select how energy costs are calculated.",
+        "data": {
+          "cost_mode": "Cost calculation method"
+        },
+        "data_description": {
+          "cost_mode": "How to calculate energy costs"
+        }
+      },
+      "fixed_rate": {
+        "title": "Fixed Rate Settings",
+        "description": "Enter the fixed rate applied to all usage.",
+        "data": {
+          "fixed_rate": "Fixed rate ($/kWh)"
+        },
+        "data_description": {
+          "fixed_rate": "Single rate applied to all kWh consumed"
+        }
+      },
+      "tou": {
+        "title": "Time-of-Use Rate Settings",
+        "description": "Configure peak and off-peak rates and hours.",
+        "data": {
+          "peak_rate": "Peak rate ($/kWh)",
+          "off_peak_rate": "Off-peak rate ($/kWh)",
+          "peak_start_hour": "Peak start hour (0-23)",
+          "peak_end_hour": "Peak end hour (0-23)"
+        },
+        "data_description": {
+          "peak_rate": "Rate during peak hours",
+          "off_peak_rate": "Rate during off-peak hours",
+          "peak_start_hour": "Hour when peak pricing starts (0-23)",
+          "peak_end_hour": "Hour when peak pricing ends (0-23)"
+        }
+      },
+      "schedule1": {
+        "title": "Schedule 1 - VA Residential",
+        "description": "Costs will be calculated using the full Dominion Energy Virginia residential tariff ({schedule_name}), effective {effective_date}. This includes tiered distribution/generation rates, seasonal pricing, all riders, and consumption taxes. No additional configuration is needed.",
+        "submit": "Confirm"
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "latest_interval_usage": {
+        "name": "Latest interval usage"
+      },
+      "daily_usage": {
+        "name": "Today's usage"
+      },
+      "monthly_usage": {
+        "name": "Current month usage"
+      },
+      "daily_cost": {
+        "name": "Today's cost"
+      },
+      "monthly_cost": {
+        "name": "Current month cost"
+      },
+      "last_bill_charges": {
+        "name": "Last bill charges"
+      },
+      "last_bill_usage": {
+        "name": "Last bill usage"
+      },
+      "current_period_usage": {
+        "name": "Current billing period usage"
+      },
+      "effective_rate": {
+        "name": "Effective rate"
+      },
+      "billing_period_start": {
+        "name": "Billing period start"
+      },
+      "billing_period_end": {
+        "name": "Billing period end"
+      },
+      "is_time_of_use": {
+        "name": "Time-of-use plan"
+      },
+      "bill_cost_to_date": {
+        "name": "Bill cost to date"
+      },
+      "forecasted_bill": {
+        "name": "Forecasted bill"
+      },
+      "last_year_bill": {
+        "name": "Same period last year"
+      },
+      "bill_data_through": {
+        "name": "Bill data through"
+      },
+      "daily_generation": {
+        "name": "Yesterday's generation"
+      },
+      "monthly_generation": {
+        "name": "Current month generation"
+      },
+      "daily_gas_usage": {
+        "name": "Yesterday's gas usage"
+      },
+      "monthly_gas_usage": {
+        "name": "Current month gas usage"
+      }
+    }
+  }
+}

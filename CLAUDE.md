@@ -6,21 +6,30 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This is a Home Assistant custom integration for monitoring Dominion Energy electricity usage. It provides 30-minute interval data, daily/monthly totals, and cost estimation with multiple calculation modes.
 
+It supports two regions (`CONF_REGION` in the entry data):
+- **VA/NC** (`va_nc`, and all entries without a region): Gigya login, `DompowerClient`, 30-minute data.
+- **SC** (`sc`): SC portal login, `DominionSCClient` from `dompower.sc`, 15-minute electric, solar generation, hourly gas. See `docs/south-carolina-plan.md` for design decisions and gotchas.
+
 ## Architecture
 
 ### Key Components
 
 - **`coordinator.py`**: `DominionEnergyCoordinator` extends Home Assistant's `DataUpdateCoordinator`. Manages API calls via the `dompower` library, handles token refresh callbacks, and calculates costs based on configured mode (API estimate, fixed rate, or time-of-use).
 
-- **`config_flow.py`**: Two-step setup flow:
-  1. User provides access/refresh tokens (obtained via `dompower auth-helper`)
-  2. Integration auto-discovers accounts/meters from API; presents selection UI if multiple exist
+- **`config_flow.py`**: Setup flow:
+  1. `user` step selects the region.
+  2. VA/NC: `credentials` → Gigya login → `tfa_select`/`tfa_code` → account/meter discovery → `select_meter` if there are many.
+  3. SC: `sc_credentials` → `SCAuthenticator` → the same `tfa_select`/`tfa_code` steps → entry with `tfa_token`, `meter_types`, and `account_number = sc_<bidgely user id>`.
 
   Also implements `OptionsFlow` for cost calculation configuration and reauth flow for expired tokens.
 
 - **`sensor.py`**: Defines sensor entities using `DominionEnergySensorDescription` dataclass with `value_fn` lambdas for extracting data. Sensors include usage metrics, costs, and bill forecast data.
 
 - **`const.py`**: Configuration keys, cost mode constants, and default values.
+
+- **`region.py`**: Region helpers with no Home Assistant imports (`get_region`, `sc_account_key`, `sc_derived_rate`).
+
+- **`translations/en.json`**: Copy of `strings.json`. Custom integrations load UI text from this file. Keep both files the same.
 
 ### Data Flow
 
@@ -45,10 +54,19 @@ This is a Home Assistant custom integration for monitoring Dominion Energy elect
 
 ### Testing
 
-No test suite currently exists. When adding tests:
-- Mock `DompowerClient` responses
-- Test cost calculation logic in coordinator
-- Test config flow state machine (user -> discover_accounts -> select_meter)
+```bash
+# Pure tests (rates, region). tests/ha is skipped.
+uv run --extra dev pytest
+
+# All tests, including Home Assistant tests in tests/ha. Home Assistant needs
+# Python 3.13+. Until dompower with dompower.sc is on PyPI, use the local copy.
+uv run --python 3.13 --extra ha-test --with-editable ../dompower pytest
+```
+
+- `tests/ha` uses pytest-homeassistant-custom-component with a test recorder.
+- Patch `DominionEnergyConfigFlow._new_sc_authenticator` with `MagicMock(spec=SCAuthenticator)`, so the `isinstance` checks in the flow still work.
+- Patch `coordinator.async_add_external_statistics` to inspect statistics.
+- The pre-commit mypy hook installs `dompower` from PyPI. Until a `dompower` release has `dompower.sc`, it reports missing SC names.
 
 ### HACS Distribution
 

@@ -13,14 +13,17 @@
 </p>
 
 <p align="center">
-  Monitor your Dominion Energy electricity usage in Home Assistant with high-resolution 30-minute interval data.
+  Monitor your Dominion Energy electricity usage in Home Assistant with high-resolution interval data.
+  Supports Virginia, North Carolina, and South Carolina.
 </p>
 
 ---
 
 ## Features
 
-- 30-minute interval energy usage data
+- 30-minute interval energy usage data (Virginia and North Carolina)
+- 15-minute electric data, solar generation, and hourly gas data (South Carolina, [beta](#south-carolina-beta))
+- Solar generation (energy sent to the grid) for net metering accounts
 - Daily and monthly usage totals
 - Cost estimation with multiple calculation modes:
   - **API Estimate**: Derives rate from your actual bill (charges / usage)
@@ -53,9 +56,10 @@
 1. Go to Home Assistant Settings > Devices & Services
 2. Click "Add Integration"
 3. Search for "Dominion Energy"
-4. Enter your Dominion Energy username (email) and password
-5. Complete the two-factor authentication (TFA) when prompted
-6. Select your account and meter if you have multiple
+4. Select your service area: **Virginia or North Carolina**, or **South Carolina**
+5. Enter your Dominion Energy username and password
+6. Complete the two-factor authentication (TFA) when prompted
+7. Select your account and meter if you have multiple (Virginia and North Carolina only)
 
 > **Note**: SMS-based TFA is recommended. Email TFA may have reliability issues.
 
@@ -74,12 +78,24 @@
 | Latest Interval Usage | Most recent 30-minute reading (kWh) | measurement |
 | Yesterday's Usage | Previous day's total consumption (kWh) | total_increasing |
 | Current Month Usage | Month-to-date consumption (kWh) | total_increasing |
+| Yesterday's Generation | Solar energy sent to the grid on the previous day (kWh) | total_increasing |
+| Current Month Generation | Month-to-date solar energy sent to the grid (kWh) | total_increasing |
 | Yesterday's Cost | Estimated cost for previous day ($) | total |
 | Current Month Cost | Estimated cost for month-to-date ($) | total |
 | Current Billing Period Usage | Usage in current billing cycle (kWh) | total_increasing |
 | Last Bill Charges | Charges from previous bill ($) | total |
 | Last Bill Usage | Usage from previous bill (kWh) | total |
 | Effective Rate | Derived cost per kWh ($/kWh) | measurement |
+
+South Carolina entries do not have the Last Bill and Current Billing Period Usage sensors. They have these sensors:
+
+| Sensor | Description | State Class |
+|--------|-------------|-------------|
+| Bill Cost to Date | Cost in the current billing period so far ($, electric and gas together) | total |
+| Forecasted Bill | Forecast for the full billing period ($) | total |
+| Same Period Last Year | Cost for the same period last year ($), if known | total |
+| Yesterday's Gas Usage | Previous day's gas use (ft³), gas accounts only | total_increasing |
+| Current Month Gas Usage | Month-to-date gas use (ft³), gas accounts only | total_increasing |
 
 > **Note**: The Dominion Energy API only provides data for **completed days**. Yesterday's data typically becomes available the following morning. Sensors include a `data_date` attribute showing which day the data represents.
 
@@ -101,7 +117,11 @@ This integration provides **external statistics** for the Home Assistant Energy 
 | Statistic ID | Description |
 |--------------|-------------|
 | `dominion_energy:{account}_energy_consumption` | Cumulative energy consumption (kWh) |
+| `dominion_energy:{account}_energy_generation` | Cumulative solar energy sent to the grid (kWh). Accounts with solar only. Use it under **Return to grid**. |
 | `dominion_energy:{account}_energy_cost` | Cumulative energy cost (uses configured cost mode) |
+| `dominion_energy:{account}_gas_consumption` | Cumulative gas use (ft³). South Carolina accounts with gas only. Use it under **Gas consumption**. |
+
+For South Carolina, `{account}` is `sc_` followed by an internal account ID. Search for "dominion" to find the statistics. Their names include your service address.
 
 ### How It Works
 
@@ -141,6 +161,26 @@ Tokens automatically refresh in the background. If authentication fails:
 ### Missing data
 - Data may take up to 30 minutes to appear after setup
 - Historical data availability depends on Dominion Energy's API
+
+## South Carolina (beta)
+
+Dominion Energy South Carolina uses a different website (`account.dominionenergysc.com`) and a different data provider (Bidgely). This integration supports it, but the maintainer does not have an SC account. If something does not work, please report it in [issue #19](https://github.com/YeomansIII/ha-dominion-energy/issues/19).
+
+- Use the username and password for `account.dominionenergysc.com`.
+- TFA is necessary on the first login. The integration saves a device token, so later logins do not ask for a code. If Dominion rejects the token, Home Assistant asks you to re-authenticate.
+- Data updates every 2 hours. Dominion adds each day's data the next day.
+- Only logins with one service account are supported.
+- The **API Estimate** cost mode derives a rate from your current bill only for electric-only accounts. The SC bill includes gas, so gas accounts use the fixed rate. The **Schedule 1** mode is not available, because it is a Virginia tariff.
+- Gas has usage statistics but no cost statistics.
+
+To report a problem, you can attach a diagnostic report to the issue. On a computer with [uv](https://docs.astral.sh/uv/), run these commands. Use your SC portal username. It is not always your email address.
+
+```bash
+uvx dompower sc-login --username your-username
+uvx dompower sc-report
+```
+
+This writes `dompower-sc-report.txt`. The file does not contain your username, password, TFA token, email address, phone number, address, or account number. It does contain your meter readings and bill amounts. Read the file before you attach it.
 
 ## API Constants
 

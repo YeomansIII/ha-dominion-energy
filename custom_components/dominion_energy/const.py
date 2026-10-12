@@ -14,6 +14,15 @@ CONF_ACCOUNT_NUMBER: Final = "account_number"
 CONF_METER_NUMBER: Final = "meter_number"
 CONF_SERVICE_ADDRESS: Final = "service_address"
 
+# Region (service area). Entries without CONF_REGION are VA/NC.
+CONF_REGION: Final = "region"
+REGION_VA_NC: Final = "va_nc"
+REGION_SC: Final = "sc"
+
+# South Carolina config entry data keys
+CONF_TFA_TOKEN: Final = "tfa_token"
+CONF_METER_TYPES: Final = "meter_types"
+
 # Options keys for cost configuration
 CONF_COST_MODE: Final = "cost_mode"
 CONF_FIXED_RATE: Final = "fixed_rate"
@@ -30,6 +39,10 @@ COST_MODE_SCHEDULE_1: Final = "schedule_1"
 
 # Update interval (matches 30-minute interval data granularity)
 UPDATE_INTERVAL_MINUTES: Final = 30
+
+# SC data changes once a day, and each SC update starts with a full portal
+# login (7 requests), so SC entries update less often.
+SC_UPDATE_INTERVAL_MINUTES: Final = 120
 
 # Historical data backfill on first setup
 # Note: The Dominion API returns ~68 days of 30-minute data regardless of
