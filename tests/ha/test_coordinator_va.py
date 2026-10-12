@@ -5,9 +5,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from zoneinfo import ZoneInfo
 
 from dompower import BillForecast, BillPeriodData, DompowerClient, IntervalUsageData
+from homeassistant.components.recorder import get_instance
+from homeassistant.components.recorder.statistics import get_last_statistics
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant
 from pytest_homeassistant_custom_component.common import MockConfigEntry
+from pytest_homeassistant_custom_component.components.recorder.common import (
+    async_wait_recording_done,
+)
 
 from custom_components.dominion_energy.const import (
     CONF_ACCESS_TOKEN,
@@ -16,17 +21,30 @@ from custom_components.dominion_energy.const import (
     CONF_REFRESH_TOKEN,
     DOMAIN,
 )
+from custom_components.dominion_energy.coordinator import DominionEnergyCoordinator
 
 TZ = ZoneInfo("America/New_York")
 COORDINATOR = "custom_components.dominion_energy.coordinator"
 
 
-def _fake_usage(account_number, meter_number, start_date, end_date, solar=False):
+CONSUMPTION_ID = f"{DOMAIN}:123_energy_consumption"
+GENERATION_ID = f"{DOMAIN}:123_energy_generation"
+
+
+def _fake_usage(
+    account_number,
+    meter_number,
+    start_date,
+    end_date,
+    solar=False,
+    partial_day=None,
+):
+    """Return 30-minute intervals. partial_day has data only until 12:00."""
     intervals = []
     day = start_date
     while day <= end_date:
         midnight = datetime(day.year, day.month, day.day, tzinfo=TZ)
-        for i in range(48):
+        for i in range(24 if day == partial_day else 48):
             ts = midnight + timedelta(minutes=30 * i)
             intervals.append(
                 IntervalUsageData(
@@ -52,10 +70,14 @@ def _entry() -> MockConfigEntry:
     )
 
 
+def _usage_side_effect(**options):
+    return lambda **kw: _fake_usage(**kw, **options)
+
+
 def _mock_client(solar: bool = False) -> MagicMock:
     client = MagicMock(spec=DompowerClient)
     client.async_get_interval_usage = AsyncMock(
-        side_effect=lambda **kw: _fake_usage(**kw, solar=solar)
+        side_effect=_usage_side_effect(solar=solar)
     )
     client.async_get_bill_forecast = AsyncMock(
         return_value=BillForecast(
@@ -79,6 +101,33 @@ async def _setup(hass: HomeAssistant, entry: MockConfigEntry, client: MagicMock)
         await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
     return add_stats
+
+
+async def _setup_with_recorder(
+    hass: HomeAssistant, entry: MockConfigEntry, client: MagicMock
+) -> None:
+    """Set up the entry and keep the statistics in the test recorder."""
+    with patch(f"{COORDINATOR}.DompowerClient", return_value=client):
+        entry.add_to_hass(hass)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+    await async_wait_recording_done(hass)
+
+
+async def _refresh(hass: HomeAssistant, entry: MockConfigEntry) -> None:
+    await entry.runtime_data.async_refresh()
+    await hass.async_block_till_done()
+    await async_wait_recording_done(hass)
+
+
+async def _last_stat(hass: HomeAssistant, stat_id: str) -> tuple[datetime, float]:
+    """Return the local start time and sum of the last statistic."""
+    stats = await get_instance(hass).async_add_executor_job(
+        get_last_statistics, hass, 1, stat_id, True, {"sum"}
+    )
+    row = stats[stat_id][0]
+    start = datetime.fromtimestamp(row["start"], tz=TZ)
+    return start, round(row["sum"], 3)
 
 
 async def test_entry_without_region_uses_dompower_client(
@@ -132,7 +181,7 @@ async def test_va_solar_account_gets_generation(hass: HomeAssistant, freezer) ->
     gen_calls = [
         c
         for c in add_stats.call_args_list
-        if c.args[1]["statistic_id"] == f"{DOMAIN}:123_energy_generation"
+        if c.args[1]["statistic_id"] == GENERATION_ID
     ]
     assert len(gen_calls) == 1
     assert gen_calls[0].args[1]["name"] == "Dominion Energy 123 generation"
@@ -146,7 +195,133 @@ async def test_va_solar_account_gets_generation(hass: HomeAssistant, freezer) ->
         hass.states.get("sensor.dominion_energy_123_yesterday_s_generation").state
         == "2.4"
     )
-    assert (
-        hass.states.get("sensor.dominion_energy_123_latest_interval_generation")
-        is not None
+    # Statistics for consumption, cost, and generation use one download
+    backfill_downloads = [
+        c
+        for c in entry.runtime_data._client.async_get_interval_usage.call_args_list
+        if c.kwargs["start_date"] == date(2026, 6, 16)
+    ]
+    assert len(backfill_downloads) == 1
+
+
+async def test_va_generation_continues_incrementally(
+    hass: HomeAssistant, freezer
+) -> None:
+    """The next day adds to the generation sum, with one statistics download."""
+    freezer.move_to("2026-08-15 12:00:00-04:00")
+    await hass.config.async_set_time_zone("America/New_York")
+    entry = _entry()
+    client = _mock_client(solar=True)
+    await _setup_with_recorder(hass, entry, client)
+
+    # 60 days of backfill, Jun 16 to Aug 14
+    assert await _last_stat(hass, GENERATION_ID) == (
+        datetime(2026, 8, 14, 23, tzinfo=TZ),
+        round(60 * 2.4, 3),
     )
+
+    freezer.move_to("2026-08-16 12:00:00-04:00")
+    client.async_get_interval_usage.reset_mock()
+    await _refresh(hass, entry)
+
+    assert await _last_stat(hass, GENERATION_ID) == (
+        datetime(2026, 8, 15, 23, tzinfo=TZ),
+        round(61 * 2.4, 3),
+    )
+    assert await _last_stat(hass, CONSUMPTION_ID) == (
+        datetime(2026, 8, 15, 23, tzinfo=TZ),
+        round(61 * 24.0, 3),
+    )
+    # Yesterday, month to date, and one download for all statistics
+    assert client.async_get_interval_usage.await_count == 3
+
+
+async def test_va_partial_day_is_replaced_for_generation(
+    hass: HomeAssistant, freezer
+) -> None:
+    """A partial day is fetched again, and its energy is not counted twice."""
+    freezer.move_to("2026-08-15 12:00:00-04:00")
+    await hass.config.async_set_time_zone("America/New_York")
+    entry = _entry()
+    client = _mock_client()
+    client.async_get_interval_usage.side_effect = _usage_side_effect(
+        solar=True, partial_day=date(2026, 8, 14)
+    )
+    await _setup_with_recorder(hass, entry, client)
+
+    start, _ = await _last_stat(hass, GENERATION_ID)
+    assert start == datetime(2026, 8, 14, 11, tzinfo=TZ)
+
+    # Dominion publishes the rest of Aug 14
+    client.async_get_interval_usage.side_effect = _usage_side_effect(solar=True)
+    freezer.move_to("2026-08-15 13:00:00-04:00")
+    await _refresh(hass, entry)
+
+    assert await _last_stat(hass, GENERATION_ID) == (
+        datetime(2026, 8, 14, 23, tzinfo=TZ),
+        round(60 * 2.4, 3),
+    )
+    assert await _last_stat(hass, CONSUMPTION_ID) == (
+        datetime(2026, 8, 14, 23, tzinfo=TZ),
+        round(60 * 24.0, 3),
+    )
+
+
+async def test_va_upgrade_backfills_generation(hass: HomeAssistant, freezer) -> None:
+    """An entry without a generation statistic gets one when generation starts."""
+    freezer.move_to("2026-08-15 12:00:00-04:00")
+    await hass.config.async_set_time_zone("America/New_York")
+    entry = _entry()
+    client = _mock_client(solar=False)
+    await _setup_with_recorder(hass, entry, client)
+
+    stats = await get_instance(hass).async_add_executor_job(
+        get_last_statistics, hass, 1, GENERATION_ID, True, {"sum"}
+    )
+    assert not stats
+
+    # Solar is installed. The next update backfills generation only.
+    client.async_get_interval_usage.side_effect = _usage_side_effect(solar=True)
+    freezer.move_to("2026-08-16 12:00:00-04:00")
+    await _refresh(hass, entry)
+
+    # Jun 17 to Aug 15
+    assert await _last_stat(hass, GENERATION_ID) == (
+        datetime(2026, 8, 15, 23, tzinfo=TZ),
+        round(60 * 2.4, 3),
+    )
+
+    # The next update continues consumption, and generation keeps its sum
+    await _refresh(hass, entry)
+
+    assert await _last_stat(hass, CONSUMPTION_ID) == (
+        datetime(2026, 8, 15, 23, tzinfo=TZ),
+        round(61 * 24.0, 3),
+    )
+    assert await _last_stat(hass, GENERATION_ID) == (
+        datetime(2026, 8, 15, 23, tzinfo=TZ),
+        round(60 * 2.4, 3),
+    )
+
+
+def test_filter_keeps_solar_day_without_grid_energy() -> None:
+    """A day with generation but no consumption is not removed."""
+    solar_day = [
+        IntervalUsageData(
+            timestamp=datetime(2026, 8, 14, tzinfo=TZ) + timedelta(minutes=30 * i),
+            consumption=0.0,
+            generation=0.2 if 20 <= i < 32 else 0.0,
+        )
+        for i in range(48)
+    ]
+    empty_day = [
+        IntervalUsageData(
+            timestamp=datetime(2026, 8, 15, tzinfo=TZ) + timedelta(minutes=30 * i),
+            consumption=0.0,
+        )
+        for i in range(48)
+    ]
+
+    kept = DominionEnergyCoordinator._filter_incomplete_days(solar_day + empty_day)
+
+    assert kept == solar_day

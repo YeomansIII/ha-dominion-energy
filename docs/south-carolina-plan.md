@@ -97,8 +97,9 @@ cd ha-dominion-energy && uv run --python 3.13 --extra ha-test --with-editable ..
    The coordinator always uses the stored value, so a change on the server
    does not create new statistics.
 7. **One generation path for all regions.** PR #18 (emerssso) added VA/NC
-   generation. Its commits are on this branch. Both regions use
-   `{account}_energy_generation` and `_async_update_generation`.
+   generation. Its commits are on this branch. Both regions write
+   `{account}_energy_generation` together with consumption and cost, from
+   the same download.
 8. **Gas has no cost.** The cost options are in $/kWh. Gas gets consumption statistics
    (ft³) and sensors only.
 
@@ -146,15 +147,17 @@ cd ha-dominion-energy && uv run --python 3.13 --extra ha-test --with-editable ..
   readings with the same timestamp together. It does not remove duplicates.
 - **Gas days with no use.** Summer days can have zero gas use. The gas statistic
   keeps zero days. Electric consumption and generation still skip days that look
-  incomplete (`_filter_incomplete_days`).
-- **Generation statistic.** For all regions, the coordinator adds
-  `{account}_energy_generation` only when the current month has generation.
+  incomplete (`_filter_incomplete_days`). A day with generation but no energy
+  from the grid is kept.
+- **Generation statistic.** For all regions, the coordinator creates
+  `{account}_energy_generation` only when the downloaded data has generation.
   Accounts without solar get no statistic. They still get the generation sensors,
-  with the value 0.
+  with the value 0. After the statistic exists, it updates with consumption and
+  cost on every run, also on days with no generation.
   After a month with no generation, the next update fills the gap.
 - **Many downloads for each SC update.** One SC update does a login (7 requests),
-  the bill forecast (2 requests), and up to 6 Green Button downloads (yesterday,
-  month, billing period, statistics, generation, gas). Each download asks for two
+  the bill forecast (2 requests), and up to 5 Green Button downloads (yesterday,
+  month, billing period, statistics, gas). Each download asks for two
   extra days. This is why SC polls every 2 hours.
 - **Sessions in the config flow.** Each SC login attempt in the config flow makes a
   new aiohttp session with its own cookie jar. Home Assistant closes these sessions

@@ -68,16 +68,6 @@ SENSORS: tuple[DominionEnergySensorDescription, ...] = (
         value_fn=lambda data: data.monthly_total,
     ),
     DominionEnergySensorDescription(
-        key="latest_interval_generation",
-        name="Latest interval generation",
-        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
-        # Note: Not using device_class=ENERGY because state_class=MEASUREMENT
-        # is incompatible with energy device class (requires total/total_increasing)
-        state_class=SensorStateClass.MEASUREMENT,
-        suggested_display_precision=3,
-        value_fn=lambda data: data.latest_generation,
-    ),
-    DominionEnergySensorDescription(
         key="daily_generation",
         name="Yesterday's generation",
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
@@ -344,7 +334,6 @@ class DominionEnergySensor(CoordinatorEntity[DominionEnergyCoordinator], SensorE
                 "daily_cost",
                 "latest_interval_usage",
                 "daily_generation",
-                "latest_interval_generation",
                 "daily_gas_usage",
             )
             and self.coordinator.data.data_date

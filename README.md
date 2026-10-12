@@ -78,7 +78,6 @@
 | Latest Interval Usage | Most recent 30-minute reading (kWh) | measurement |
 | Yesterday's Usage | Previous day's total consumption (kWh) | total_increasing |
 | Current Month Usage | Month-to-date consumption (kWh) | total_increasing |
-| Latest Interval Generation | Most recent 30-minute reading of solar energy sent to the grid (kWh) | measurement |
 | Yesterday's Generation | Solar energy sent to the grid on the previous day (kWh) | total_increasing |
 | Current Month Generation | Month-to-date solar energy sent to the grid (kWh) | total_increasing |
 | Yesterday's Cost | Estimated cost for previous day ($) | total |
