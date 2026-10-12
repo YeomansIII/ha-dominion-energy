@@ -23,6 +23,7 @@
 
 - 30-minute interval energy usage data (Virginia and North Carolina)
 - 15-minute electric data, solar generation, and hourly gas data (South Carolina, [beta](#south-carolina-beta))
+- Solar generation (energy sent to the grid) for net metering accounts
 - Daily and monthly usage totals
 - Cost estimation with multiple calculation modes:
   - **API Estimate**: Derives rate from your actual bill (charges / usage)
@@ -77,9 +78,9 @@
 | Latest Interval Usage | Most recent 30-minute reading (kWh) | measurement |
 | Yesterday's Usage | Previous day's total consumption (kWh) | total_increasing |
 | Current Month Usage | Month-to-date consumption (kWh) | total_increasing |
-| Latest Interval Generation | Most recent 30-minute generation reading (kWh) | measurement |
-| Yesterday's Generation | Previous day's total generation (kWh) | total_increasing |
-| Current Month Generation | Month-to-date generation (kWh) | total_increasing |
+| Latest Interval Generation | Most recent 30-minute reading of solar energy sent to the grid (kWh) | measurement |
+| Yesterday's Generation | Solar energy sent to the grid on the previous day (kWh) | total_increasing |
+| Current Month Generation | Month-to-date solar energy sent to the grid (kWh) | total_increasing |
 | Yesterday's Cost | Estimated cost for previous day ($) | total |
 | Current Month Cost | Estimated cost for month-to-date ($) | total |
 | Current Billing Period Usage | Usage in current billing cycle (kWh) | total_increasing |
@@ -94,8 +95,6 @@ South Carolina entries do not have the Last Bill and Current Billing Period Usag
 | Bill Cost to Date | Cost in the current billing period so far ($, electric and gas together) | total |
 | Forecasted Bill | Forecast for the full billing period ($) | total |
 | Same Period Last Year | Cost for the same period last year ($), if known | total |
-| Yesterday's Generation | Solar energy sent to the grid on the previous day (kWh) | total_increasing |
-| Current Month Generation | Month-to-date solar energy sent to the grid (kWh) | total_increasing |
 | Yesterday's Gas Usage | Previous day's gas use (ft³), gas accounts only | total_increasing |
 | Current Month Gas Usage | Month-to-date gas use (ft³), gas accounts only | total_increasing |
 
@@ -119,9 +118,8 @@ This integration provides **external statistics** for the Home Assistant Energy 
 | Statistic ID | Description |
 |--------------|-------------|
 | `dominion_energy:{account}_energy_consumption` | Cumulative energy consumption (kWh) |
-| `dominion_energy:{account}_energy_excess_generation` | Cumulative energy generation (kWh) |
+| `dominion_energy:{account}_energy_generation` | Cumulative solar energy sent to the grid (kWh). Accounts with solar only. Use it under **Return to grid**. |
 | `dominion_energy:{account}_energy_cost` | Cumulative energy cost (uses configured cost mode) |
-| `dominion_energy:{account}_energy_generation` | Cumulative solar energy sent to the grid (kWh). South Carolina accounts with solar only. Use it under **Return to grid**. |
 | `dominion_energy:{account}_gas_consumption` | Cumulative gas use (ft³). South Carolina accounts with gas only. Use it under **Gas consumption**. |
 
 For South Carolina, `{account}` is `sc_` followed by an internal account ID. Search for "dominion" to find the statistics. Their names include your service address.

@@ -68,6 +68,34 @@ SENSORS: tuple[DominionEnergySensorDescription, ...] = (
         value_fn=lambda data: data.monthly_total,
     ),
     DominionEnergySensorDescription(
+        key="latest_interval_generation",
+        name="Latest interval generation",
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        # Note: Not using device_class=ENERGY because state_class=MEASUREMENT
+        # is incompatible with energy device class (requires total/total_increasing)
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=3,
+        value_fn=lambda data: data.latest_generation,
+    ),
+    DominionEnergySensorDescription(
+        key="daily_generation",
+        name="Yesterday's generation",
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        device_class=SensorDeviceClass.ENERGY,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        suggested_display_precision=2,
+        value_fn=lambda data: data.daily_generation,
+    ),
+    DominionEnergySensorDescription(
+        key="monthly_generation",
+        name="Current month generation",
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        device_class=SensorDeviceClass.ENERGY,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        suggested_display_precision=2,
+        value_fn=lambda data: data.monthly_generation,
+    ),
+    DominionEnergySensorDescription(
         key="daily_cost",
         name="Yesterday's cost",
         native_unit_of_measurement="USD",
@@ -153,37 +181,9 @@ VA_NC_SENSORS: tuple[DominionEnergySensorDescription, ...] = (
             "Yes" if data.bill_forecast and data.bill_forecast.is_tou else "No"
         ),
     ),
-        DominionEnergySensorDescription(
-        key="latest_interval_generation",
-        name="Latest interval generation",
-        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
-        # Note: Not using device_class=ENERGY because state_class=MEASUREMENT
-        # is incompatible with energy device class (requires total/total_increasing)
-        state_class=SensorStateClass.MEASUREMENT,
-        suggested_display_precision=3,
-        value_fn=lambda data: data.latest_generation,
-    ),
-    DominionEnergySensorDescription(
-        key="daily_generation",
-        name="Yesterday's generation",
-        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
-        device_class=SensorDeviceClass.ENERGY,
-        state_class=SensorStateClass.TOTAL_INCREASING,
-        suggested_display_precision=2,
-        value_fn=lambda data: data.daily_generation_total,
-    ),
-    DominionEnergySensorDescription(
-        key="monthly_generation",
-        name="Current month generation",
-        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
-        device_class=SensorDeviceClass.ENERGY,
-        state_class=SensorStateClass.TOTAL_INCREASING,
-        suggested_display_precision=2,
-        value_fn=lambda data: data.monthly_generation_total,
-    ),
 )
 
-# Bill forecast and solar sensors for South Carolina. The SC bill values
+# Bill forecast sensors for South Carolina. The SC bill values
 # include electric and gas together.
 SC_SENSORS: tuple[DominionEnergySensorDescription, ...] = (
     DominionEnergySensorDescription(
@@ -227,24 +227,6 @@ SC_SENSORS: tuple[DominionEnergySensorDescription, ...] = (
         value_fn=lambda data: (
             data.sc_forecast.data_through if data.sc_forecast else None
         ),
-    ),
-    DominionEnergySensorDescription(
-        key="daily_generation",
-        name="Yesterday's generation",
-        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
-        device_class=SensorDeviceClass.ENERGY,
-        state_class=SensorStateClass.TOTAL_INCREASING,
-        suggested_display_precision=2,
-        value_fn=lambda data: data.daily_generation,
-    ),
-    DominionEnergySensorDescription(
-        key="monthly_generation",
-        name="Current month generation",
-        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
-        device_class=SensorDeviceClass.ENERGY,
-        state_class=SensorStateClass.TOTAL_INCREASING,
-        suggested_display_precision=2,
-        value_fn=lambda data: data.monthly_generation,
     ),
 )
 

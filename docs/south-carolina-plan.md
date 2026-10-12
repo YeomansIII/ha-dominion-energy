@@ -96,8 +96,9 @@ cd ha-dominion-energy && uv run --python 3.13 --extra ha-test --with-editable ..
    `account_number`. Statistic IDs, the unique ID, and the device use this value.
    The coordinator always uses the stored value, so a change on the server
    does not create new statistics.
-7. **Statistic IDs match PR #18.** Solar uses `{account}_energy_generation`.
-   This is the same ID that open PR #18 uses for VA/NC generation.
+7. **One generation path for all regions.** PR #18 (emerssso) added VA/NC
+   generation. Its commits are on this branch. Both regions use
+   `{account}_energy_generation` and `_async_update_generation`.
 8. **Gas has no cost.** The cost options are in $/kWh. Gas gets consumption statistics
    (ft³) and sensors only.
 
@@ -135,8 +136,6 @@ cd ha-dominion-energy && uv run --python 3.13 --extra ha-test --with-editable ..
   The HA gas statistic uses `UnitOfVolume.CUBIC_FEET`.
 - **Unmerged work.** dompower PR #7 (on `fix/token-expired-passthrough`) centralizes the
   user agent. SC has its own user agent in `dompower/sc/const.py` for now.
-  HA PR #18 adds VA/NC generation statistics with the same statistic ID pattern.
-  Expect merge conflicts in `coordinator.py` and `sensor.py`.
 - **No SC account for the maintainer.** All SC code is tested with fixtures only.
   A real account test is necessary before release.
 - **Unknown login status.** `Authenticate` can possibly return a status other than
@@ -148,8 +147,10 @@ cd ha-dominion-energy && uv run --python 3.13 --extra ha-test --with-editable ..
 - **Gas days with no use.** Summer days can have zero gas use. The gas statistic
   keeps zero days. Electric consumption and generation still skip days that look
   incomplete (`_filter_incomplete_days`).
-- **Generation statistic.** The coordinator adds `{account}_energy_generation` only
-  when the current month has generation. Accounts without solar get no statistic.
+- **Generation statistic.** For all regions, the coordinator adds
+  `{account}_energy_generation` only when the current month has generation.
+  Accounts without solar get no statistic. They still get the generation sensors,
+  with the value 0.
   After a month with no generation, the next update fills the gap.
 - **Many downloads for each SC update.** One SC update does a login (7 requests),
   the bill forecast (2 requests), and up to 6 Green Button downloads (yesterday,
