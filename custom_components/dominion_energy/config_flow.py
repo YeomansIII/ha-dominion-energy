@@ -36,6 +36,7 @@ from homeassistant.config_entries import (
     OptionsFlow,
 )
 from homeassistant.core import callback
+from homeassistant.data_entry_flow import AbortFlow
 from homeassistant.helpers.aiohttp_client import (
     async_create_clientsession,
     async_get_clientsession,
@@ -230,6 +231,9 @@ class DominionEnergyConfigFlow(ConfigFlow, domain=DOMAIN):
             except GigyaError as err:
                 _LOGGER.error("Gigya authentication error: %s", err)
                 errors["base"] = "unknown"
+            except AbortFlow:
+                # Let unique ID aborts reach the flow manager
+                raise
             except Exception:
                 _LOGGER.exception("Unexpected exception during login")
                 errors["base"] = "unknown"
@@ -288,6 +292,9 @@ class DominionEnergyConfigFlow(ConfigFlow, domain=DOMAIN):
             except (GigyaError, InvalidAuthError) as err:
                 _LOGGER.error("SC authentication error: %s", err)
                 errors["base"] = "unknown"
+            except AbortFlow:
+                # Let unique ID aborts reach the flow manager
+                raise
             except Exception:
                 _LOGGER.exception("Unexpected exception during SC login")
                 errors["base"] = "unknown"
@@ -498,6 +505,9 @@ class DominionEnergyConfigFlow(ConfigFlow, domain=DOMAIN):
         except ApiError as err:
             _LOGGER.error("API error discovering accounts: %s", err)
             errors["base"] = "cannot_connect"
+        except AbortFlow:
+            # Let unique ID aborts reach the flow manager
+            raise
         except Exception:
             _LOGGER.exception("Unexpected exception during account discovery")
             errors["base"] = "unknown"
@@ -707,6 +717,9 @@ class DominionEnergyConfigFlow(ConfigFlow, domain=DOMAIN):
             except (GigyaError, InvalidAuthError) as err:
                 _LOGGER.error("Reauth authentication error: %s", err)
                 errors["base"] = "unknown"
+            except AbortFlow:
+                # Let unique ID aborts reach the flow manager
+                raise
             except Exception:
                 _LOGGER.exception("Unexpected exception during reauth")
                 errors["base"] = "unknown"
@@ -811,6 +824,11 @@ class DominionEnergyConfigFlow(ConfigFlow, domain=DOMAIN):
                 errors["base"] = _sc_api_error_key(err)
             except (GigyaError, InvalidAuthError) as err:
                 _LOGGER.error("TFA verification error: %s", err)
+                errors["base"] = "unknown"
+            except AbortFlow:
+                raise
+            except Exception:
+                _LOGGER.exception("Unexpected exception during reauth TFA")
                 errors["base"] = "unknown"
 
         target_display = (

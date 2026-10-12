@@ -369,6 +369,16 @@ async def test_va_failed_generation_backfill_does_not_block_consumption(
         round(61 * 24.0, 3),
     )
 
+    # The failed backfill is not tried again on the same day
+    freezer.move_to("2026-08-16 12:30:00-04:00")
+    await _refresh(hass, entry)
+    backfill_calls = [
+        c
+        for c in client.async_get_interval_usage.call_args_list
+        if c.kwargs["start_date"] == date(2026, 6, 17)
+    ]
+    assert len(backfill_calls) == 1
+
 
 async def test_dst_fall_back_day_has_25_hours(hass: HomeAssistant, freezer) -> None:
     """The two 01:00 hours on the fall-back day get separate statistics."""

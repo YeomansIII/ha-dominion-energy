@@ -235,6 +235,21 @@ async def test_sc_reauth_needs_new_tfa(hass: HomeAssistant) -> None:
     assert entry.data[CONF_TFA_TOKEN] == "new-token"
 
 
+async def test_sc_flow_already_configured(hass: HomeAssistant) -> None:
+    """A login for an SC account that already has an entry aborts."""
+    _sc_entry().add_to_hass(hass)
+    auth = _mock_sc_auth(tfa_required=False)
+    result = await _start_sc_flow(hass)
+
+    with _patch_auth(auth), _patch_setup():
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {CONF_USERNAME: "me", CONF_PASSWORD: "pw"}
+        )
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "already_configured"
+
+
 async def test_sc_reauth_tfa_options_error_shows_form(hass: HomeAssistant) -> None:
     """A TFA options error shows the reauth form and does not log in again."""
     entry = _sc_entry()

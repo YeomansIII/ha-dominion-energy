@@ -167,8 +167,12 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
         # Track if backfill has been initiated to prevent race condition
         # where recorder hasn't committed stats yet and backfill runs again
         self._backfill_initiated: bool = False
-        # Same, for the generation-only backfill and the SC gas statistic
+        # Same, for the SC gas statistic
         self._extra_backfill_initiated: set[str] = set()
+        # Day of the last generation-only backfill. It runs at most once a
+        # day, so a backfill that writes nothing does not download 60 days
+        # again on every update.
+        self._generation_backfill_day: date | None = None
         # Label used in statistic names
         self._stat_label: str = (
             config_entry.data.get(CONF_SERVICE_ADDRESS)
@@ -201,7 +205,9 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
         """Set up the coordinator (called once on first refresh)."""
         if self._is_sc:
             # The SC portal uses session cookies. Use a dedicated session so
-            # that the cookies are not shared with other integrations.
+            # that the cookies are not shared with other integrations. This
+            # runs during entry setup, so Home Assistant detaches the session
+            # when the entry unloads.
             self._sc_client = DominionSCClient(
                 async_create_clientsession(
                     self.hass, cookie_jar=create_sc_cookie_jar()
@@ -714,9 +720,7 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
         else:
             # Consumption and cost exist - reset backfill flag
             self._backfill_initiated = False
-            if generation_exists:
-                self._extra_backfill_initiated.discard(generation_stat_id)
-            elif has_generation:
+            if not generation_exists and has_generation:
                 # Generation started, or the entry is from a version without
                 # generation statistics - backfill generation only (upgrade
                 # path). Consumption and cost still update below.
@@ -745,13 +749,18 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
         generation_stat_id: str,
         derived_rate: float | None,
     ) -> None:
-        """Backfill the generation statistic for an entry that has none yet."""
-        if generation_stat_id in self._extra_backfill_initiated:
+        """Backfill the generation statistic for an entry that has none yet.
+
+        This runs at most once a day. The once-a-day limit also covers the
+        time until the recorder commits a successful backfill.
+        """
+        today = dt_util.now().date()
+        if self._generation_backfill_day == today:
             _LOGGER.debug(
-                "Backfill already initiated for %s, waiting for recorder to commit",
-                generation_stat_id,
+                "Generation backfill for %s already ran today", account_number
             )
             return
+        self._generation_backfill_day = today
 
         _LOGGER.info(
             "Generation statistics missing for %s - backfilling %d days of "
@@ -759,14 +768,13 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
             account_number,
             BACKFILL_DAYS,
         )
-        if await self._backfill_statistics(
+        await self._backfill_statistics(
             account_number,
             consumption_stat_id=None,
             cost_stat_id=None,
             generation_stat_id=generation_stat_id,
             derived_rate=derived_rate,
-        ):
-            self._extra_backfill_initiated.add(generation_stat_id)
+        )
 
     @staticmethod
     def _filter_incomplete_days(
