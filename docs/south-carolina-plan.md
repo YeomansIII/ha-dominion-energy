@@ -114,7 +114,8 @@ cd ha-dominion-energy && uv run --python 3.13 --extra ha-test --with-editable ..
   (Eastern) clock time encoded as if they were UTC. `1786579200` is 2026-08-13 00:00 UTC,
   but it means 00:00 EDT. The parser reads the UTC clock time and attaches `America/New_York`.
   During the DST fall-back hour, two readings can have the same local time.
-  The HA code already merges these with `_deduplicate_hourly_by_utc`.
+  The HA code groups hourly statistics by UTC hour (`_utc_hour`), so the two
+  01:00 hours stay separate when their timestamps have the right `fold`.
 - **Request window.** The upstream code sends real epoch values for local midnight
   as `start` and `end`. We cannot be sure how Bidgely reads them. The client requests one
   extra day on each side and then filters the readings by local date.

@@ -5,8 +5,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from zoneinfo import ZoneInfo
 
 from dompower import (
+    CannotConnectError,
     DominionSCClient,
     IntervalUsageData,
+    InvalidAuthError,
     MeterType,
     SCBillForecast,
     TFARequiredError,
@@ -174,6 +176,36 @@ async def test_sc_electric_only_derives_rate(hass: HomeAssistant, freezer) -> No
         hass.states.get("sensor.dominion_energy_sc_1_main_st_yesterday_s_gas_usage")
         is None
     )
+
+
+async def test_sc_optional_download_errors_keep_entry_loaded(
+    hass: HomeAssistant, freezer
+) -> None:
+    """Gas and bill forecast errors do not stop the electric update."""
+    freezer.move_to("2026-08-15 12:00:00-04:00")
+    await hass.config.async_set_time_zone("America/New_York")
+    entry = _entry(["electric", "gas"])
+    client = _mock_client()
+    client.async_get_bill_forecast.side_effect = CannotConnectError("503")
+
+    def gas_fails(start, end, meter_type=MeterType.ELECTRIC):
+        if meter_type is MeterType.GAS:
+            raise InvalidAuthError("401 on gas download")
+        return _fake_usage(start, end, meter_type)
+
+    client.async_get_interval_usage.side_effect = gas_fails
+
+    add_stats = await _setup(hass, entry, client)
+
+    assert entry.state is ConfigEntryState.LOADED
+    assert not hass.config_entries.flow.async_progress()
+    data = entry.runtime_data.data
+    assert data.daily_total == 24.0
+    assert data.sc_forecast is None
+    assert data.daily_gas is None
+    stat_ids = {call.args[1]["statistic_id"] for call in add_stats.call_args_list}
+    assert f"{DOMAIN}:{ACCOUNT_KEY}_energy_consumption" in stat_ids
+    assert f"{DOMAIN}:{ACCOUNT_KEY}_gas_consumption" not in stat_ids
 
 
 async def test_sc_rejected_tfa_token_starts_reauth(hass: HomeAssistant) -> None:

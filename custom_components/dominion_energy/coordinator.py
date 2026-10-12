@@ -83,6 +83,10 @@ from .region import is_sc, sc_derived_rate
 
 _LOGGER = logging.getLogger(__name__)
 
+# Errors from optional downloads (SC bill forecast and gas). These are logged,
+# and the update continues with the data that it has.
+_OPTIONAL_FETCH_ERRORS = (ApiError, CannotConnectError, InvalidAuthError)
+
 type DominionEnergyConfigEntry = ConfigEntry[DominionEnergyCoordinator]
 
 
@@ -432,7 +436,7 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
         assert self._sc_client is not None
         try:
             forecast = await self._sc_client.async_get_bill_forecast()
-        except ApiError as err:
+        except _OPTIONAL_FETCH_ERRORS as err:
             _LOGGER.warning("Could not fetch SC bill forecast: %s", err)
             return None, None
 
@@ -448,7 +452,7 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
             period_intervals = await self._async_get_intervals(
                 forecast.period_start, forecast.data_through
             )
-        except ApiError as err:
+        except _OPTIONAL_FETCH_ERRORS as err:
             _LOGGER.warning("Could not fetch SC billing period usage: %s", err)
             return forecast, None
 
@@ -475,7 +479,7 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
             gas_intervals = await self._async_get_intervals(
                 month_start, yesterday, MeterType.GAS
             )
-        except ApiError as err:
+        except _OPTIONAL_FETCH_ERRORS as err:
             _LOGGER.warning("Could not fetch gas usage: %s", err)
             return
         data.daily_gas = sum(
@@ -707,35 +711,19 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
                 generation_stat_id=None if generation_exists else generation_stat_id,
                 derived_rate=derived_rate,
             )
-        elif not generation_exists and has_generation:
-            # Generation started, or the entry is from a version without
-            # generation statistics - backfill generation only (upgrade path)
-            self._backfill_initiated = False
-            if generation_stat_id in self._extra_backfill_initiated:
-                _LOGGER.debug(
-                    "Backfill already initiated for %s, waiting for recorder to commit",
-                    generation_stat_id,
-                )
-                return
-
-            _LOGGER.info(
-                "Generation statistics missing for %s - backfilling %d days of "
-                "generation data",
-                account_number,
-                BACKFILL_DAYS,
-            )
-            if await self._backfill_statistics(
-                account_number,
-                consumption_stat_id=None,
-                cost_stat_id=None,
-                generation_stat_id=generation_stat_id,
-                derived_rate=derived_rate,
-            ):
-                self._extra_backfill_initiated.add(generation_stat_id)
         else:
-            # Statistics exist - reset backfill flags and do incremental update
+            # Consumption and cost exist - reset backfill flag
             self._backfill_initiated = False
-            self._extra_backfill_initiated.discard(generation_stat_id)
+            if generation_exists:
+                self._extra_backfill_initiated.discard(generation_stat_id)
+            elif has_generation:
+                # Generation started, or the entry is from a version without
+                # generation statistics - backfill generation only (upgrade
+                # path). Consumption and cost still update below.
+                await self._async_backfill_generation(
+                    account_number, generation_stat_id, derived_rate
+                )
+
             _LOGGER.debug(
                 "Found existing statistics for %s, performing incremental update",
                 consumption_stat_id,
@@ -750,6 +738,35 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
                 data_date,
                 derived_rate,
             )
+
+    async def _async_backfill_generation(
+        self,
+        account_number: str,
+        generation_stat_id: str,
+        derived_rate: float | None,
+    ) -> None:
+        """Backfill the generation statistic for an entry that has none yet."""
+        if generation_stat_id in self._extra_backfill_initiated:
+            _LOGGER.debug(
+                "Backfill already initiated for %s, waiting for recorder to commit",
+                generation_stat_id,
+            )
+            return
+
+        _LOGGER.info(
+            "Generation statistics missing for %s - backfilling %d days of "
+            "generation data",
+            account_number,
+            BACKFILL_DAYS,
+        )
+        if await self._backfill_statistics(
+            account_number,
+            consumption_stat_id=None,
+            cost_stat_id=None,
+            generation_stat_id=generation_stat_id,
+            derived_rate=derived_rate,
+        ):
+            self._extra_backfill_initiated.add(generation_stat_id)
 
     @staticmethod
     def _filter_incomplete_days(
@@ -798,23 +815,15 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
         return intervals
 
     @staticmethod
-    def _deduplicate_hourly_by_utc(
-        hourly_data: dict[datetime, float],
-    ) -> dict[datetime, float]:
-        """Merge hourly entries that map to the same UTC hour.
+    def _utc_hour(timestamp: datetime) -> datetime:
+        """Return the start of the UTC hour that contains timestamp.
 
-        On DST spring-forward days, two local-time keys (e.g., 02:00 EST and
-        03:00 EDT) can map to the same UTC instant. This merges their values
-        and returns a dict keyed by UTC-converted datetimes with no duplicates.
+        Hourly statistics are grouped by UTC hour. Local datetimes that differ
+        only in fold (the two 01:00 hours on the DST fall-back day) compare
+        equal, so they cannot be dict keys. Eastern time offsets are whole
+        hours, so each UTC hour is also one local hour.
         """
-        utc_data: dict[datetime, float] = {}
-        for local_dt, value in hourly_data.items():
-            utc_dt = dt_util.as_utc(local_dt)
-            if utc_dt in utc_data:
-                utc_data[utc_dt] += value
-            else:
-                utc_data[utc_dt] = value
-        return utc_data
+        return dt_util.as_utc(timestamp).replace(minute=0, second=0, microsecond=0)
 
     async def _get_sum_before(
         self, stat_id: str, before_utc: datetime, num_stats: int = 48
@@ -971,7 +980,7 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
             if not consumption_stat_id and not cost_stat_id:
                 return False
 
-        # Group intervals by hour for hourly statistics
+        # Group intervals by UTC hour for hourly statistics
         # For Schedule 1, track cumulative kWh per calendar month for tiered pricing
         cost_mode = self.config_entry.options.get(CONF_COST_MODE, COST_MODE_API)
         is_schedule1 = cost_mode == COST_MODE_SCHEDULE_1
@@ -988,7 +997,7 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
                 cumulative_kwh = 0.0
                 current_month = interval_month
 
-            hour_start = interval.timestamp.replace(minute=0, second=0, microsecond=0)
+            hour_start = self._utc_hour(interval.timestamp)
             if hour_start not in hourly_consumption:
                 hourly_consumption[hour_start] = 0.0
                 hourly_generation[hour_start] = 0.0
@@ -1005,11 +1014,6 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
             if is_schedule1:
                 cumulative_kwh += interval.consumption
 
-        # Deduplicate by UTC to prevent duplicate-key errors in HA recorder
-        utc_consumption = self._deduplicate_hourly_by_utc(hourly_consumption)
-        utc_generation = self._deduplicate_hourly_by_utc(hourly_generation)
-        utc_cost = self._deduplicate_hourly_by_utc(hourly_cost)
-
         # Build statistics with cumulative sums
         consumption_statistics: list[StatisticData] = []
         generation_statistics: list[StatisticData] = []
@@ -1018,23 +1022,23 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
         generation_sum = 0.0
         cost_sum = 0.0
 
-        for utc_dt in sorted(utc_consumption.keys()):
+        for utc_dt in sorted(hourly_consumption.keys()):
             if consumption_stat_id:
-                consumption = utc_consumption[utc_dt]
+                consumption = hourly_consumption[utc_dt]
                 consumption_sum += consumption
                 consumption_statistics.append(
                     StatisticData(start=utc_dt, state=consumption, sum=consumption_sum)
                 )
 
             if generation_stat_id:
-                generation = utc_generation[utc_dt]
+                generation = hourly_generation[utc_dt]
                 generation_sum += generation
                 generation_statistics.append(
                     StatisticData(start=utc_dt, state=generation, sum=generation_sum)
                 )
 
             if cost_stat_id:
-                cost = utc_cost[utc_dt]
+                cost = hourly_cost[utc_dt]
                 cost_sum += cost
                 cost_statistics.append(
                     StatisticData(start=utc_dt, state=cost, sum=cost_sum)
@@ -1307,7 +1311,7 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
 
         _LOGGER.debug("Received %d intervals for statistics update", len(intervals))
 
-        # Group intervals by hour (consumption and cost)
+        # Group intervals by UTC hour (consumption, generation, and cost)
         # For Schedule 1, track cumulative kWh per calendar month for tiered pricing
         cost_mode = self.config_entry.options.get(CONF_COST_MODE, COST_MODE_API)
         is_schedule1 = cost_mode == COST_MODE_SCHEDULE_1
@@ -1324,7 +1328,7 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
                 cumulative_kwh = 0.0
                 current_month = interval_month
 
-            hour_start = interval.timestamp.replace(minute=0, second=0, microsecond=0)
+            hour_start = self._utc_hour(interval.timestamp)
             if hour_start not in hourly_consumption:
                 hourly_consumption[hour_start] = 0.0
                 hourly_generation[hour_start] = 0.0
@@ -1341,18 +1345,13 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
             if is_schedule1:
                 cumulative_kwh += interval.consumption
 
-        # Deduplicate by UTC to prevent duplicate-key errors in HA recorder
-        utc_consumption = self._deduplicate_hourly_by_utc(hourly_consumption)
-        utc_generation = self._deduplicate_hourly_by_utc(hourly_generation)
-        utc_cost = self._deduplicate_hourly_by_utc(hourly_cost)
-
-        if not utc_consumption:
+        if not hourly_consumption:
             return
 
         # Continue the generation sum from the last generation statistic
         # before the first hour that is written now. Look back far enough to
         # find it when old days are fetched again.
-        first_utc = min(utc_consumption)
+        first_utc = min(hourly_consumption)
         generation_sum = 0.0
         if generation_stat_id:
             hours_back = int((dt_util.utcnow() - first_utc).total_seconds() // 3600)
@@ -1366,10 +1365,10 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
         generation_statistics: list[StatisticData] = []
         cost_statistics: list[StatisticData] = []
 
-        for utc_dt in sorted(utc_consumption.keys()):
-            consumption = utc_consumption[utc_dt]
-            generation = utc_generation[utc_dt]
-            cost = utc_cost[utc_dt]
+        for utc_dt in sorted(hourly_consumption.keys()):
+            consumption = hourly_consumption[utc_dt]
+            generation = hourly_generation[utc_dt]
+            cost = hourly_cost[utc_dt]
             consumption_sum += consumption
             generation_sum += generation
             cost_sum += cost
@@ -1493,7 +1492,7 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
             intervals = await self._async_get_intervals(
                 start_date, data_date, meter_type
             )
-        except ApiError as err:
+        except _OPTIONAL_FETCH_ERRORS as err:
             _LOGGER.warning("Could not fetch data for %s: %s", stat_id, err)
             return
 
@@ -1505,15 +1504,14 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
 
         hourly: dict[datetime, float] = {}
         for interval in intervals:
-            hour_start = interval.timestamp.replace(minute=0, second=0, microsecond=0)
+            hour_start = self._utc_hour(interval.timestamp)
             hourly[hour_start] = hourly.get(hour_start, 0.0) + value_fn(interval)
-        utc_hourly = self._deduplicate_hourly_by_utc(hourly)
 
         statistics: list[StatisticData] = []
-        for utc_dt in sorted(utc_hourly):
-            running_sum += utc_hourly[utc_dt]
+        for utc_dt in sorted(hourly):
+            running_sum += hourly[utc_dt]
             statistics.append(
-                StatisticData(start=utc_dt, state=utc_hourly[utc_dt], sum=running_sum)
+                StatisticData(start=utc_dt, state=hourly[utc_dt], sum=running_sum)
             )
 
         metadata = StatisticMetaData(

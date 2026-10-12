@@ -1,12 +1,21 @@
 """Regression tests for Virginia/North Carolina entries after the SC changes."""
 
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 from zoneinfo import ZoneInfo
 
-from dompower import BillForecast, BillPeriodData, DompowerClient, IntervalUsageData
+from dompower import (
+    ApiError,
+    BillForecast,
+    BillPeriodData,
+    DompowerClient,
+    IntervalUsageData,
+)
 from homeassistant.components.recorder import get_instance
-from homeassistant.components.recorder.statistics import get_last_statistics
+from homeassistant.components.recorder.statistics import (
+    get_last_statistics,
+    statistics_during_period,
+)
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant
 from pytest_homeassistant_custom_component.common import MockConfigEntry
@@ -39,13 +48,20 @@ def _fake_usage(
     solar=False,
     partial_day=None,
 ):
-    """Return 30-minute intervals. partial_day has data only until 12:00."""
+    """Return 30-minute intervals. partial_day has data only until 12:00.
+
+    The intervals step through real time, so DST days have 46 or 50 intervals.
+    """
     intervals = []
     day = start_date
     while day <= end_date:
-        midnight = datetime(day.year, day.month, day.day, tzinfo=TZ)
-        for i in range(24 if day == partial_day else 48):
-            ts = midnight + timedelta(minutes=30 * i)
+        start = datetime(day.year, day.month, day.day, tzinfo=TZ).astimezone(UTC)
+        next_day = day + timedelta(days=1)
+        end = datetime(next_day.year, next_day.month, next_day.day, tzinfo=TZ)
+        count = int((end.astimezone(UTC) - start).total_seconds() // 1800)
+        for i in range(24 if day == partial_day else count):
+            # astimezone sets fold=1 for the second 01:00 hour on fall-back day
+            ts = (start + timedelta(minutes=30 * i)).astimezone(TZ)
             intervals.append(
                 IntervalUsageData(
                     timestamp=ts,
@@ -325,3 +341,52 @@ def test_filter_keeps_solar_day_without_grid_energy() -> None:
     kept = DominionEnergyCoordinator._filter_incomplete_days(solar_day + empty_day)
 
     assert kept == solar_day
+
+
+async def test_va_failed_generation_backfill_does_not_block_consumption(
+    hass: HomeAssistant, freezer
+) -> None:
+    """Consumption and cost still update when the generation backfill fails."""
+    freezer.move_to("2026-08-15 12:00:00-04:00")
+    await hass.config.async_set_time_zone("America/New_York")
+    entry = _entry()
+    client = _mock_client(solar=False)
+    await _setup_with_recorder(hass, entry, client)
+
+    solar_usage = _usage_side_effect(solar=True)
+
+    def backfill_fails(**kw):
+        if kw["start_date"] == date(2026, 6, 17):
+            raise ApiError("backfill download failed")
+        return solar_usage(**kw)
+
+    client.async_get_interval_usage.side_effect = backfill_fails
+    freezer.move_to("2026-08-16 12:00:00-04:00")
+    await _refresh(hass, entry)
+
+    assert await _last_stat(hass, CONSUMPTION_ID) == (
+        datetime(2026, 8, 15, 23, tzinfo=TZ),
+        round(61 * 24.0, 3),
+    )
+
+
+async def test_dst_fall_back_day_has_25_hours(hass: HomeAssistant, freezer) -> None:
+    """The two 01:00 hours on the fall-back day get separate statistics."""
+    freezer.move_to("2026-11-02 12:00:00-05:00")
+    await hass.config.async_set_time_zone("America/New_York")
+    entry = _entry()
+    await _setup_with_recorder(hass, entry, _mock_client())
+
+    stats = await get_instance(hass).async_add_executor_job(
+        statistics_during_period,
+        hass,
+        datetime(2026, 11, 1, tzinfo=TZ),
+        datetime(2026, 11, 2, tzinfo=TZ),
+        {CONSUMPTION_ID},
+        "hour",
+        None,
+        {"state"},
+    )
+    states = [row["state"] for row in stats[CONSUMPTION_ID]]
+    assert len(states) == 25
+    assert all(state == 1.0 for state in states)
