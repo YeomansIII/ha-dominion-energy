@@ -6,6 +6,7 @@ import logging
 from collections.abc import Mapping
 from typing import Any
 
+import aiohttp
 import voluptuous as vol
 from dompower import (
     AccountInfo,
@@ -121,6 +122,14 @@ class DominionEnergyConfigFlow(ConfigFlow, domain=DOMAIN):
         self._tfa_targets: list[TFATarget] = []
         self._selected_tfa_target: TFATarget | None = None
         self._account_meter_options: dict[str, tuple[AccountInfo, MeterDevice]] = {}
+        self._sc_session: aiohttp.ClientSession | None = None
+
+    @callback
+    def async_remove(self) -> None:
+        """Detach the SC session when the flow ends."""
+        if self._sc_session is not None:
+            self._sc_session.detach()
+            self._sc_session = None
 
     @staticmethod
     @callback
@@ -142,14 +151,19 @@ class DominionEnergyConfigFlow(ConfigFlow, domain=DOMAIN):
         )
 
     def _new_sc_authenticator(self) -> SCAuthenticator:
-        """Return an SC authenticator with its own cookie jar.
+        """Return an SC authenticator with an empty cookie jar.
 
-        The SC portal uses session cookies, so the session must not be shared.
+        The SC portal uses session cookies, so the session must not be shared
+        with other integrations. The flow keeps one session for all login
+        attempts and detaches it in async_remove.
         """
-        session = async_create_clientsession(
-            self.hass, cookie_jar=create_sc_cookie_jar()
-        )
-        return SCAuthenticator(session)
+        if self._sc_session is None:
+            self._sc_session = async_create_clientsession(
+                self.hass, auto_cleanup=False, cookie_jar=create_sc_cookie_jar()
+            )
+        else:
+            self._sc_session.cookie_jar.clear()
+        return SCAuthenticator(self._sc_session)
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -584,6 +598,10 @@ class DominionEnergyConfigFlow(ConfigFlow, domain=DOMAIN):
         assert self._username is not None
         assert self._password is not None
 
+        # TFA targets belong to one login session
+        self._tfa_targets = []
+        self._selected_tfa_target = None
+
         if self._region == REGION_SC:
             sc_authenticator = self._new_sc_authenticator()
             self._authenticator = sc_authenticator
@@ -615,6 +633,8 @@ class DominionEnergyConfigFlow(ConfigFlow, domain=DOMAIN):
         """
         if isinstance(self._authenticator, SCAuthenticator):
             sc_session = await self._authenticator.async_complete_login()
+            if sc_account_key(sc_session.account.user_id) != reauth_entry.unique_id:
+                return self.async_abort(reason="wrong_account")
             new_data = {
                 **reauth_entry.data,
                 CONF_USERNAME: self._username,
@@ -629,6 +649,14 @@ class DominionEnergyConfigFlow(ConfigFlow, domain=DOMAIN):
         assert isinstance(self._authenticator, GigyaAuthenticator)
         if tokens is None:
             tokens = await self._authenticator._async_complete_login()
+        customer_info = await DompowerClient(
+            async_get_clientsession(self.hass),
+            access_token=tokens.access_token,
+            refresh_token=tokens.refresh_token,
+        ).async_get_customer_info()
+        account_numbers = {account.account_number for account in customer_info.accounts}
+        if reauth_entry.data[CONF_ACCOUNT_NUMBER] not in account_numbers:
+            return self.async_abort(reason="wrong_account")
         new_data = {
             **reauth_entry.data,
             CONF_USERNAME: self._username,
@@ -683,11 +711,15 @@ class DominionEnergyConfigFlow(ConfigFlow, domain=DOMAIN):
                 _LOGGER.exception("Unexpected exception during reauth")
                 errors["base"] = "unknown"
 
+        return self._show_reauth_form(errors)
+
+    def _show_reauth_form(self, errors: dict[str, str]) -> ConfigFlowResult:
+        """Show the reauth credentials form."""
         return self.async_show_form(
             step_id="reauth_confirm",
             data_schema=STEP_USER_DATA_SCHEMA,
             errors=errors,
-            description_placeholders={"name": reauth_entry.title},
+            description_placeholders={"name": self._get_reauth_entry().title},
         )
 
     async def async_step_reauth_tfa_select(
@@ -704,12 +736,14 @@ class DominionEnergyConfigFlow(ConfigFlow, domain=DOMAIN):
             try:
                 self._tfa_targets = await self._authenticator.async_get_tfa_options()
             except (GigyaError, ApiError, CannotConnectError) as err:
+                # Show the form. Calling async_step_reauth_confirm logs in
+                # with the saved credentials again and returns here.
                 _LOGGER.error("Failed to get TFA options: %s", err)
-                return await self.async_step_reauth_confirm()
+                return self._show_reauth_form({"base": "cannot_connect"})
 
         if not self._tfa_targets:
             _LOGGER.error("No TFA targets available")
-            return await self.async_step_reauth_confirm()
+            return self._show_reauth_form({"base": "unknown"})
 
         if user_input is not None:
             selected_key = user_input["tfa_target"]

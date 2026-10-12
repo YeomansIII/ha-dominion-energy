@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from dompower import (
     ApiError,
+    CannotConnectError,
     InvalidCredentialsError,
     LoginResult,
     MeterType,
@@ -232,6 +233,64 @@ async def test_sc_reauth_needs_new_tfa(hass: HomeAssistant) -> None:
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "reauth_successful"
     assert entry.data[CONF_TFA_TOKEN] == "new-token"
+
+
+async def test_sc_reauth_tfa_options_error_shows_form(hass: HomeAssistant) -> None:
+    """A TFA options error shows the reauth form and does not log in again."""
+    entry = _sc_entry()
+    entry.add_to_hass(hass)
+    auth = _mock_sc_auth(tfa_required=True)
+    auth.async_get_tfa_options.side_effect = CannotConnectError("portal down")
+
+    with _patch_auth(auth), _patch_setup():
+        result = await entry.start_reauth_flow(hass)
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "reauth_confirm"
+    assert result["errors"] == {"base": "cannot_connect"}
+    auth.async_submit_credentials.assert_awaited_once()
+
+
+async def test_sc_reauth_wrong_account(hass: HomeAssistant) -> None:
+    """Reauth with the login of a different SC account aborts."""
+    entry = _sc_entry()
+    entry.add_to_hass(hass)
+    auth = _mock_sc_auth(tfa_required=False)
+    auth.async_complete_login.return_value = SCSession(
+        access_token="bearer",
+        account=SCAccount(
+            user_id="OTHER-9999",
+            service_address="2 OTHER ST",
+            meter_types=[MeterType.ELECTRIC],
+        ),
+    )
+
+    with _patch_auth(auth), _patch_setup():
+        result = await entry.start_reauth_flow(hass)
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "wrong_account"
+    assert entry.data[CONF_TFA_TOKEN] == "saved-token"
+
+
+async def test_sc_flow_reuses_and_detaches_session(hass: HomeAssistant) -> None:
+    """The flow uses one SC session for all attempts and detaches it at the end."""
+    session = MagicMock()
+    flow = DominionEnergyConfigFlow()
+    flow.hass = hass
+
+    with patch(
+        "custom_components.dominion_energy.config_flow.async_create_clientsession",
+        return_value=session,
+    ) as create_session:
+        flow._new_sc_authenticator()
+        flow._new_sc_authenticator()
+        flow.async_remove()
+
+    create_session.assert_called_once()
+    assert create_session.call_args.kwargs["auto_cleanup"] is False
+    session.cookie_jar.clear.assert_called_once()
+    session.detach.assert_called_once()
 
 
 async def test_sc_options_hide_schedule_1(hass: HomeAssistant) -> None:

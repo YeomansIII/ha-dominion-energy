@@ -5,6 +5,7 @@
       "reauth_successful": "Re-authentication successful",
       "reconfigure_successful": "Re-authentication successful",
       "unique_id_mismatch": "The selected account does not match the original configuration",
+      "wrong_account": "You signed in to a different account. Sign in to the account of this entry.",
       "unknown": "An unexpected error occurred"
     },
     "error": {
