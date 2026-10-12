@@ -813,9 +813,9 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
         if not last_stats.get(stat_id):
             return None
 
-        # Find the last stat BEFORE before_utc
+        # Find the last stat BEFORE before_utc. Rows are newest first.
         best_sum: float | None = None
-        for stat_data in reversed(last_stats[stat_id]):
+        for stat_data in last_stats[stat_id]:
             stat_start = stat_data["start"]
             if isinstance(stat_start, (int, float)):
                 stat_dt = datetime.fromtimestamp(stat_start, tz=dt_util.UTC)
@@ -857,8 +857,9 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
             return None, 0.0, 0.0
 
         # Walk backwards to find the last stat with state > 0 at hour >= 22
-        # (indicating the end of a fully-populated day, not a sparse artifact)
-        for stat_data in reversed(last_stats[consumption_stat_id]):
+        # (indicating the end of a fully-populated day, not a sparse artifact).
+        # Rows are newest first.
+        for stat_data in last_stats[consumption_stat_id]:
             state = float(stat_data.get("state") or 0)
             if state <= 0:
                 continue
@@ -888,7 +889,7 @@ class DominionEnergyCoordinator(DataUpdateCoordinator[DominionEnergyData]):
                 {"sum"},
             )
             if last_cost_stats.get(cost_stat_id):
-                for cost_data in reversed(last_cost_stats[cost_stat_id]):
+                for cost_data in last_cost_stats[cost_stat_id]:
                     cost_start = cost_data["start"]
                     if isinstance(cost_start, (int, float)):
                         cost_dt = datetime.fromtimestamp(cost_start, tz=dt_util.UTC)
