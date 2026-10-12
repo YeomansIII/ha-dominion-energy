@@ -174,10 +174,10 @@ Dominion Energy South Carolina uses a different website (`account.dominionenergy
 - The **API Estimate** cost mode derives a rate from your current bill only for electric-only accounts. The SC bill includes gas, so gas accounts use the fixed rate. The **Schedule 1** mode is not available, because it is a Virginia tariff.
 - Gas has usage statistics but no cost statistics.
 
-To report a problem, you can attach a diagnostic report to the issue. On a computer with [uv](https://docs.astral.sh/uv/), run:
+To report a problem, you can attach a diagnostic report to the issue. On a computer with [uv](https://docs.astral.sh/uv/), run these commands. Use your SC portal username. It is not always your email address.
 
 ```bash
-uvx dompower sc-login --username you@example.com
+uvx dompower sc-login --username your-username
 uvx dompower sc-report
 ```
 

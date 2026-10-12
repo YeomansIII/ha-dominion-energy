@@ -177,7 +177,7 @@ After the dompower branch is pushed, an SC user can run:
 
 ```bash
 uvx --from git+https://github.com/YeomansIII/dompower@feat/south-carolina \
-  dompower sc-login --username you@example.com
+  dompower sc-login --username your-username
 uvx --from git+https://github.com/YeomansIII/dompower@feat/south-carolina \
   dompower sc-report
 ```
