@@ -113,9 +113,8 @@ cd ha-dominion-energy && uv run --python 3.13 --extra ha-test --with-editable ..
 - **Bidgely timestamps are local wall time.** The epoch values in the XML are local
   (Eastern) clock time encoded as if they were UTC. `1786579200` is 2026-08-13 00:00 UTC,
   but it means 00:00 EDT. The parser reads the UTC clock time and attaches `America/New_York`.
-  During the DST fall-back hour, two readings can have the same local time.
-  The HA code groups hourly statistics by UTC hour (`_utc_hour`), so the two
-  01:00 hours stay separate when their timestamps have the right `fold`.
+  On the DST fall-back day, dompower gives the second 01:00 hour `fold=1` (EST),
+  so each reading has the correct UTC instant. See "DST fall-back hour" below.
 - **Request window.** The upstream code sends real epoch values for local midnight
   as `start` and `end`. We cannot be sure how Bidgely reads them. The client requests one
   extra day on each side and then filters the readings by local date.
@@ -144,8 +143,14 @@ cd ha-dominion-energy && uv run --python 3.13 --extra ha-test --with-editable ..
   `failed` or `twoFA` (for example, for an account without TFA). We raise
   `InvalidAuthError` and do not guess. If a tester sees this, add the status.
 - **DST fall-back hour.** Because the epochs are local wall time, the two
-  01:00-01:59 hours in November can have the same timestamps. The client adds
-  readings with the same timestamp together. It does not remove duplicates.
+  01:00-01:59 hours in November have the same epoch values. dompower gives a
+  repeated wall time in one register `fold=1` (EST), so the day has 25 hours
+  (100 electric intervals). `registers_to_intervals` keys by the UTC instant.
+  Aware datetimes that differ only in `fold` compare equal and have the same hash.
+  Key dicts and sets of SC timestamps by UTC (the coordinator uses `_utc_hour`),
+  not by local time. On the spring-forward day, 02:00-02:59 does not exist. If
+  Bidgely sends readings for these times, dompower moves them to 03:00-03:59 EDT
+  and adds them to those intervals. The day total stays correct.
 - **Gas days with no use.** Summer days can have zero gas use. The gas statistic
   keeps zero days. Electric consumption and generation still skip days that look
   incomplete (`_filter_incomplete_days`). A day with generation but no energy
